@@ -1,0 +1,176 @@
+random_string.unique: Refreshing state... [id=9kta2u]
+data.azurerm_client_config.current: Reading...
+azurerm_resource_group.this: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2]
+azurerm_subnet.broker: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.Network/virtualNetworks/vnet-wiq9kta2u/subnets/container-apps]
+data.azurerm_client_config.current: Read complete after 0s [id=Y2xpZW50Q29uZmlncy9jbGllbnRJZD0wNGIwNzc5NS04ZGRiLTQ2MWEtYmJlZS0wMmY5ZTFiZjdiNDY7b2JqZWN0SWQ9MTk0NjllMzUtNzU3NC00N2I0LTgzY2QtYzA2Mjg5ZDE0NDljO3N1YnNjcmlwdGlvbklkPTkyYzU3ZmVkLWM1MjktNDgxNS05N2ZjLWViYWJkYzYzMTM3Yzt0ZW5hbnRJZD03NjcyYTMxZi0xYzUxLTQ2YzYtYTliYy02MDFjMmMxNDUxY2M=]
+azurerm_container_app_environment.broker: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.App/managedEnvironments/cae-wiq9kta2u]
+azurerm_virtual_network.broker: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.Network/virtualNetworks/vnet-wiq9kta2u]
+azurerm_container_registry.this: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.ContainerRegistry/registries/acrwiq9kta2u]
+azurerm_log_analytics_workspace.this: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.OperationalInsights/workspaces/log-wiq9kta2u]
+azapi_resource.ai_foundry: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.CognitiveServices/accounts/aifwiq9kta2u-managed]
+azurerm_cosmosdb_account.this: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.DocumentDB/databaseAccounts/cosmos-wiq9kta2u]
+azurerm_application_insights.this: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.Insights/components/appiwiq9kta2u]
+azurerm_role_assignment.current_user_acr_push: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.ContainerRegistry/registries/acrwiq9kta2u/providers/Microsoft.Authorization/roleAssignments/6be6bd6e-a359-20a2-478e-7364bc78d766]
+azurerm_role_assignment.foundry_network_connection_approver["cosmos"]: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.DocumentDB/databaseAccounts/cosmos-wiq9kta2u/providers/Microsoft.Authorization/roleAssignments/3a4132de-0fb8-b89e-26d8-42ff563f55d9]
+azurerm_role_assignment.foundry_network_connection_approver["foundry"]: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.CognitiveServices/accounts/aifwiq9kta2u-managed/providers/Microsoft.Authorization/roleAssignments/13e0b2fc-4c04-39f5-fafb-1c3b7d918cbc]
+azurerm_cosmosdb_sql_database.this: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.DocumentDB/databaseAccounts/cosmos-wiq9kta2u/sqlDatabases/workplace]
+azurerm_cosmosdb_sql_container.history: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.DocumentDB/databaseAccounts/cosmos-wiq9kta2u/sqlDatabases/workplace/containers/chatHistory]
+azapi_resource_action.foundry_managed_network: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.CognitiveServices/accounts/aifwiq9kta2u-managed/managedNetworks/default]
+azapi_resource.foundry_cosmos_outbound_rule: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.CognitiveServices/accounts/aifwiq9kta2u-managed/managedNetworks/default/outboundRules/cosmos-history]
+azapi_resource.ai_foundry_project: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.CognitiveServices/accounts/aifwiq9kta2u-managed/projects/fpwiq9kta2u]
+azurerm_role_assignment.project_foundry_user: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.CognitiveServices/accounts/aifwiq9kta2u-managed/providers/Microsoft.Authorization/roleAssignments/ec9cee25-08b5-4e94-f025-e9fed6dbb708]
+azurerm_role_assignment.project_appinsights_monitoring_reader: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.Insights/components/appiwiq9kta2u/providers/Microsoft.Authorization/roleAssignments/8db0c0e7-b625-0ed8-587d-976be8788ba3]
+azurerm_role_assignment.project_acr_pull: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.ContainerRegistry/registries/acrwiq9kta2u/providers/Microsoft.Authorization/roleAssignments/09622e8d-8150-c1c4-560a-6141709a2920]
+azurerm_role_assignment.current_user_project_manager: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.CognitiveServices/accounts/aifwiq9kta2u-managed/projects/fpwiq9kta2u/providers/Microsoft.Authorization/roleAssignments/527ea890-99c6-4b63-252b-d004870e312f]
+azurerm_role_assignment.project_appinsights_log_reader: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.Insights/components/appiwiq9kta2u/providers/Microsoft.Authorization/roleAssignments/1a671d78-ce30-f08d-c21c-5dd771e94f1d]
+azurerm_role_assignment.current_user_foundry_user: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.CognitiveServices/accounts/aifwiq9kta2u-managed/projects/fpwiq9kta2u/providers/Microsoft.Authorization/roleAssignments/a7efc953-5f71-fa7a-e0dc-2336ececc8b1]
+azapi_resource.rai_policy: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.CognitiveServices/accounts/aifwiq9kta2u-managed/raiPolicies/workplace-guardrail]
+azapi_resource.chat_deployment: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.CognitiveServices/accounts/aifwiq9kta2u-managed/deployments/gpt-5.6-luna]
+azapi_resource.foundry_appinsights_connection: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.CognitiveServices/accounts/aifwiq9kta2u-managed/connections/aifwiq9kta2u-managed-appinsights]
+azuread_service_principal.workiq: Refreshing state... [id=/servicePrincipals/735db5bb-89b0-4aa6-a74c-f8968a4d9994]
+azapi_resource.project_appinsights_connection: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.CognitiveServices/accounts/aifwiq9kta2u-managed/projects/fpwiq9kta2u/connections/appi-connection]
+azapi_resource.registry_connection: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.CognitiveServices/accounts/aifwiq9kta2u-managed/projects/fpwiq9kta2u/connections/agent-images]
+azuread_application.toolbox: Refreshing state... [id=/applications/8b72b724-6b43-44c0-9220-b9abb20414f3]
+azuread_service_principal.toolbox: Refreshing state... [id=/servicePrincipals/bb09f1a6-e9cf-465b-9e4e-301fa7908a3b]
+azapi_data_plane_resource.agent[0]: Refreshing state... [id=aifwiq9kta2u-managed.services.ai.azure.com/api/projects/fpwiq9kta2u/agents/workplace-productivity]
+azurerm_cosmosdb_sql_role_assignment.agent_history[0]: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.DocumentDB/databaseAccounts/cosmos-wiq9kta2u/sqlRoleAssignments/4b77d2ad-dff6-cce2-fcf1-a87cfd144a63]
+azurerm_role_assignment.agent_toolbox_user[0]: Refreshing state... [id=/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.CognitiveServices/accounts/aifwiq9kta2u-managed/projects/fpwiq9kta2u/providers/Microsoft.Authorization/roleAssignments/61c9c2a0-796c-9753-a7cb-1629d956578e]
+
+Terraform used the selected providers to generate the following execution
+plan. Resource actions are indicated with the following symbols:
+  ~ update in-place
+  - destroy
+
+Terraform will perform the following actions:
+
+  # azuread_application.toolbox will be updated in-place
+  ~ resource "azuread_application" "toolbox" {
+        id                             = "/applications/8b72b724-6b43-44c0-9220-b9abb20414f3"
+      ~ identifier_uris                = [
+          - "api://8e8f0c38-8910-45d8-bb12-0f0999bccbae",
+        ]
+        tags                           = []
+        # (24 unchanged attributes hidden)
+
+        # (7 unchanged blocks hidden)
+    }
+
+  # azurerm_container_app_environment.broker will be destroyed
+  # (because azurerm_container_app_environment.broker is not in configuration)
+  - resource "azurerm_container_app_environment" "broker" {
+      - custom_domain_verification_id               = "2451068DA8B60E3E0108A7B68FF6A2F142B5103916146B92ECF22A23C48B6403" -> null
+      - default_domain                              = "yellowpebble-eef7ee09.eastus2.azurecontainerapps.io" -> null
+      - id                                          = "/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.App/managedEnvironments/cae-wiq9kta2u" -> null
+      - infrastructure_subnet_id                    = "/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.Network/virtualNetworks/vnet-wiq9kta2u/subnets/container-apps" -> null
+      - internal_load_balancer_enabled              = false -> null
+      - location                                    = "eastus2" -> null
+      - log_analytics_workspace_id                  = "/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.OperationalInsights/workspaces/log-wiq9kta2u" -> null
+      - logs_destination                            = "log-analytics" -> null
+      - mutual_tls_enabled                          = false -> null
+      - name                                        = "cae-wiq9kta2u" -> null
+      - public_network_access                       = "Enabled" -> null
+      - resource_group_name                         = "rg-maf-harness-workiq-9kta2u-eastus2" -> null
+      - tags                                        = {
+          - "managed_by" = "terraform"
+          - "repo"       = "maf-harness-workiq"
+          - "workload"   = "workplace-productivity-agent"
+        } -> null
+      - zone_redundancy_enabled                     = false -> null
+        # (6 unchanged attributes hidden)
+
+      - workload_profile {
+          - maximum_count         = 0 -> null
+          - minimum_count         = 0 -> null
+          - name                  = "Consumption" -> null
+          - workload_profile_type = "Consumption" -> null
+        }
+    }
+
+  # azurerm_subnet.broker will be destroyed
+  # (because azurerm_subnet.broker is not in configuration)
+  - resource "azurerm_subnet" "broker" {
+      - address_prefixes                              = [
+          - "10.42.0.0/23",
+        ] -> null
+      - default_outbound_access_enabled               = true -> null
+      - id                                            = "/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.Network/virtualNetworks/vnet-wiq9kta2u/subnets/container-apps" -> null
+      - name                                          = "container-apps" -> null
+      - private_endpoint_network_policies             = "Disabled" -> null
+      - private_link_service_network_policies_enabled = true -> null
+      - resource_group_name                           = "rg-maf-harness-workiq-9kta2u-eastus2" -> null
+      - service_endpoint_policy_ids                   = [] -> null
+      - service_endpoints                             = [] -> null
+      - virtual_network_name                          = "vnet-wiq9kta2u" -> null
+        # (1 unchanged attribute hidden)
+
+      - delegation {
+          - name = "container-apps" -> null
+
+          - service_delegation {
+              - actions = [
+                  - "Microsoft.Network/virtualNetworks/subnets/join/action",
+                ] -> null
+              - name    = "Microsoft.App/environments" -> null
+            }
+        }
+    }
+
+  # azurerm_virtual_network.broker will be destroyed
+  # (because azurerm_virtual_network.broker is not in configuration)
+  - resource "azurerm_virtual_network" "broker" {
+      - address_space                  = [
+          - "10.42.0.0/16",
+        ] -> null
+      - dns_servers                    = [] -> null
+      - flow_timeout_in_minutes        = 0 -> null
+      - guid                           = "89452e7c-2b76-43b0-883b-0f8ea21b7ea6" -> null
+      - id                             = "/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.Network/virtualNetworks/vnet-wiq9kta2u" -> null
+      - location                       = "eastus2" -> null
+      - name                           = "vnet-wiq9kta2u" -> null
+      - private_endpoint_vnet_policies = "Disabled" -> null
+      - resource_group_name            = "rg-maf-harness-workiq-9kta2u-eastus2" -> null
+      - subnet                         = [
+          - {
+              - address_prefixes                              = [
+                  - "10.42.0.0/23",
+                ]
+              - default_outbound_access_enabled               = true
+              - delegation                                    = [
+                  - {
+                      - name               = "container-apps"
+                      - service_delegation = [
+                          - {
+                              - actions = [
+                                  - "Microsoft.Network/virtualNetworks/subnets/join/action",
+                                ]
+                              - name    = "Microsoft.App/environments"
+                            },
+                        ]
+                    },
+                ]
+              - id                                            = "/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.Network/virtualNetworks/vnet-wiq9kta2u/subnets/container-apps"
+              - name                                          = "container-apps"
+              - private_endpoint_network_policies             = "Disabled"
+              - private_link_service_network_policies_enabled = true
+              - security_group                                = "/subscriptions/92c57fed-c529-4815-97fc-ebabdc63137c/resourceGroups/rg-maf-harness-workiq-9kta2u-eastus2/providers/Microsoft.Network/networkSecurityGroups/vnet-wiq9kta2u-container-apps-nsg-eastus2"
+              - service_endpoint_policy_ids                   = []
+              - service_endpoints                             = []
+                # (1 unchanged attribute hidden)
+            },
+        ] -> null
+      - tags                           = {
+          - "managed_by" = "terraform"
+          - "repo"       = "maf-harness-workiq"
+          - "workload"   = "workplace-productivity-agent"
+        } -> null
+        # (2 unchanged attributes hidden)
+    }
+
+Plan: 0 to add, 1 to change, 3 to destroy.
+
+─────────────────────────────────────────────────────────────────────────────
+
+Saved the plan to: toolbox-remaining-cleanup.tfplan
+
+To perform exactly these actions, run the following command to apply:
+    terraform apply "toolbox-remaining-cleanup.tfplan"

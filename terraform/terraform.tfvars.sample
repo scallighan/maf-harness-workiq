@@ -1,0 +1,20 @@
+# Copy to terraform.tfvars and fill in. Never commit real secrets.
+subscription_id = "00000000-0000-0000-0000-000000000000"
+location        = "EastUS2"
+gh_repo         = "scallighan/maf-harness-workiq"
+
+# Optional overrides
+# chat_model          = "gpt-5.6-luna"
+# chat_model_version  = "2026-07-09"
+# Alternative: set both chat_model = "gpt-5.4-mini" and chat_model_version = "2026-03-17".
+# chat_model_capacity = 50
+# user_object_ids     = ["ENTRA_USER_OBJECT_ID"]
+# agent_name          = "workplace-productivity"
+# agent_cpu           = "1"
+# agent_memory        = "2Gi"
+# history_retention_days = 30
+# workiq_toolbox_name = "work-iq-toolbox"
+# setup_toolbox.py persists Foundry's OAuth redirect URL in toolbox.auto.tfvars.
+
+# scripts/deploy.sh persists the immutable image in agent.auto.tfvars.
+# OAuth secrets and access/refresh tokens never belong here.

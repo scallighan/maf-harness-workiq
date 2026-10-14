@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "workplace-agent"
+version = "0.1.0"
+description = "Foundry-hosted Agent Harness with Work IQ through Foundry Toolbox"
+requires-python = ">=3.12"
+dependencies = [
+  "agent-framework-core>=1.20.0,<2",
+  "agent-framework-foundry>=1.10.2,<2",
+  "agent-framework-foundry-hosting==1.0.0b261008",
+  "agent-framework-azure-cosmos==1.0.0b261002",
+  "azure-ai-projects>=2.3,<3",
+  "azure-identity>=1.25,<2",
+  "azure-keyvault-keys>=4.11,<5",
+  "cryptography>=46,<48",
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "mcp>=1.24,<2",
+  "msal>=1.39,<2",
+  "PyJWT[crypto]>=2.10,<3",
+  "pypdf>=6.1,<7",
+  "uvicorn>=0.35,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9", "pytest-asyncio>=1,<2", "ruff>=0.13,<1", "pyright>=1.1.400,<2"]
+
+[project.scripts]
+workplace-agent = "workplace_agent.app:main"
+workplace-demo = "workplace_agent.demo:main"
+workplace-auth = "workplace_agent.broker:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/workplace_agent"]
+
+[tool.uv]
+prerelease = "allow"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pyright]
+include = ["src", "tests", "scripts"]
+typeCheckingMode = "standard"
