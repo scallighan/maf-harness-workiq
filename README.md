@@ -1,28 +1,33 @@
 # Workplace productivity agent: Foundry Toolbox + Work IQ
 
 A Microsoft Foundry Hosted Agent using Microsoft Agent Framework's Agent Harness
-and the documented Work IQ Toolbox integration:
+and a custom Work IQ MCP connection exposed through Foundry Toolbox:
 
 - A dedicated Entra application has the delegated `WorkIQAgent.Ask` permission.
-- A Foundry project OAuth connection targets Work IQ's A2A endpoint.
-- A toolbox contains `WorkIQPreviewToolboxTool` referencing that connection.
+- A Terraform-managed custom OAuth connection targets
+  `https://workiq.svc.cloud.microsoft/mcp`.
+- A toolbox contains a generic `MCPToolboxTool`, not `WorkIQPreviewToolboxTool`.
+- Terraform inputs control which upstream tools are exposed and whether calls
+  require explicit user approval.
 - The runtime uses the SDK's existing `FoundryToolbox` directly. No custom MCP
   transport, standalone OAuth broker, shared user token or manual caller binding
   is used by this path.
 
-The model delegates workplace questions to Work IQ, which returns synthesized
-Microsoft 365 answers and sources under the authorizing user's permissions.
+The model can call Work IQ's individual MCP tools for semantic questions,
+structured reads, schema discovery and document-byte retrieval under the
+authorizing user's permissions.
 The agent requests read-only research and must report access/search limitations.
 Tenant policy remains responsible for enforcing permitted Work IQ operations.
 
-**This initial Toolbox path does not retrieve PDF bytes or independently verify
-page numbers.** It must say "page not verified" rather than inventing page evidence.
+**This path does not independently verify PDF page numbers.** Exposing
+`fetch_blob` alone does not provide page verification: the agent must say
+"page not verified" rather than inventing page evidence.
 The earlier direct endpoint and page-verification code is deferred; historical
 design notes are preserved in [docs/standalone.md](docs/standalone.md).
 
 ## Prerequisites
 
-- Python 3.12+, uv, Terraform 1.9+, Azure CLI; Docker for a hosted release.
+- Python 3.12+, uv, Terraform 1.11+, Azure CLI; Docker for a hosted release.
 - An Azure subscription with Foundry hosted-agent support and model quota.
 - Work IQ tenant enablement, usage billing and the calling user's entitlements.
 - Foundry project access for the developer, runtime identity and intended users.
@@ -54,7 +59,8 @@ Alternatively, load an existing `terraform/.env` with
 `set -a; source terraform/.env; set +a`.
 
 Terraform creates the Foundry project, model, guardrail, registry, observability,
-Cosmos conversation history and a dedicated Toolbox OAuth application.
+Cosmos conversation history, a dedicated Toolbox OAuth application and the
+custom Work IQ MCP connection.
 Defaults are EastUS2 and `gpt-5.6-luna`; confirm quota and availability.
 For `gpt-5.4-mini`, set both `chat_model = "gpt-5.4-mini"` and
 `chat_model_version = "2026-03-17"`.
@@ -81,7 +87,47 @@ and Foundry-managed Cosmos private endpoint are retained. Key Vault deletion
 honors soft-delete/purge protection; its protected soft-deleted vault/key remains
 until Azure's retention period expires.
 
-## 2. Configure Work IQ through Foundry Toolbox
+## 2. Manage the custom Work IQ MCP connection
+
+If `work-iq-mcp` already exists, import it before applying. This preserves the
+OAuth client secret already stored by Foundry. Azure requires that same secret
+to be resubmitted for any connection update; importing alone does not rotate it:
+
+```bash
+PROJECT_ID=$(terraform -chdir=terraform output -raw foundry_project_id)
+terraform -chdir=terraform import azapi_resource.workiq_mcp \
+  "$PROJECT_ID/connections/work-iq-mcp?api-version=2025-06-01"
+terraform -chdir=terraform plan
+terraform -chdir=terraform apply
+```
+
+For a new connection, first create a secret on the dedicated application
+(`workiq_toolbox_client_id`), provide it through the ephemeral environment
+variable `TF_VAR_workiq_mcp_client_secret`, and set
+`TF_VAR_workiq_mcp_secret_version=1` when applying. Use the same process with an
+incremented version for explicit rotation. Do not put the secret in a tfvars
+file, command-line argument or source control. AzAPI's write-only
+`sensitive_body` keeps it out of Terraform plans and state. Unset the secret
+environment variable after applying; keep the nonsecret version in your
+Terraform configuration. An unchanged imported connection needs no secret
+input. For adoption updates or later connection changes, provide the existing
+secret again and increment the credential version so AzAPI sends it with the
+update. A version bump alone does not generate or rotate an application secret.
+On a brand-new stack, bootstrap the application first with
+`terraform -chdir=terraform apply -target=azuread_service_principal.toolbox`,
+create its secret, then run the full platform apply with the ephemeral input.
+
+Configure interaction controls in your Terraform inputs:
+
+```hcl
+workiq_mcp_allowed_tools    = ["ask", "fetch", "get_schema", "search_paths", "fetch_blob"]
+workiq_mcp_require_approval = "always"
+```
+
+The default allowlist excludes create/update/delete/action tools. Use exact
+upstream names, not the toolbox-prefixed names. `always` requires confirmation
+for every allowed call; `never` permits those calls without a prompt. Apply the
+Terraform configuration and run setup to publish changed controls.
 
 Run as the authorized tenant administrator:
 
@@ -89,22 +135,22 @@ Run as the authorized tenant administrator:
 uv run python scripts/setup_toolbox.py
 ```
 
-The setup script follows the documented Work IQ connection contract:
+The setup script uses the Terraform-managed connection:
 
 1. Grants the dedicated application's delegated admin consent.
-2. Creates a 90-day client secret in memory and sends it to the Foundry OAuth
-   connection. The plaintext secret is never printed, written to a local file or
-   put in Terraform state.
+2. Reads and validates the existing custom MCP connection. It never creates
+   a connection, issues a secret or rotates stored credentials.
 3. Adds Foundry's returned OAuth redirect URL to that application and saves only
    the nonsecret redirect URI in git-ignored `terraform/toolbox.auto.tfvars`.
-4. Creates the toolbox with `WorkIQPreviewToolboxTool`. Its first version is the
-   default automatically.
+4. Publishes `MCPToolboxTool` with the Terraform allowlist and approval policy.
+   Its first version is the default automatically; later changed configurations
+   create a new immutable version and explicitly promote it.
 
-Repeated setup reuses a matching connection and default toolbox version rather
-than issuing another secret or changing a published version. A mismatched
-configuration fails explicitly for review. Rotate the client secret before its
-90-day lifetime expires and recreate the immutable Foundry connection with the
-new credential; rerunning setup does not rotate it.
+Repeated setup reuses a matching default toolbox version. It preserves existing
+OAuth redirects, including callbacks added by Foundry consent. Manage the secret's
+expiry separately; rerunning setup does not extend or rotate it. The earlier
+preview A2A connection is not used by the new toolbox; retain it during migration
+until the generic MCP path has been verified.
 
 **Admin consent does not replace each user's OAuth authorization.** Foundry
 provides a per-user consent link when the toolbox needs it. Complete that flow as
@@ -150,7 +196,7 @@ Try a read-only workplace question, for example:
 
 For an existing platform, the script first builds and pushes the Linux/amd64
 Toolbox image, persists its immutable digest in `terraform/agent.auto.tfvars`,
-then applies the release and broker cleanup together. It configures the Work IQ
+then applies the release and custom MCP connection configuration. It configures the Work IQ
 toolbox and waits for that exact agent version/image to become active.
 For a new stack it provisions the platform before the build as well.
 Every Terraform apply requires confirmation.
@@ -181,7 +227,8 @@ bash -n scripts/deploy.sh scripts/local-test.sh
 ```
 
 Offline tests cover the runtime's request-owned resources, local history and
-approval flow, OAuth connection setup, credential handling, Toolbox reuse and
+approval flow, Terraform connection validation, callback preservation, generic
+MCP Toolbox publication/reuse and
 deployment scripts. The deferred direct endpoint/evidence tests remain separate.
 Live tenant policy, consent, role propagation and service availability must be
 checked with the intended user.
@@ -192,3 +239,4 @@ checked with the intended user.
 - [Use a toolbox with a hosted agent](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/tools/use-toolbox-hosted-agent)
 - [Microsoft Agent Framework Foundry Toolbox](https://learn.microsoft.com/en-us/agent-framework/integrations/by-component/tools/foundry-toolbox)
 - [Toolbox authentication](https://learn.microsoft.com/en-us/azure/foundry/agents/how-to/tools/tool-authentication)
+- [Work IQ MCP overview](https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/work-iq/mcp/overview)

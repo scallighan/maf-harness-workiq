@@ -3,10 +3,11 @@ locals {
   loc_for_naming = lower(replace(var.location, " ", ""))
   gh_repo        = split("/", var.gh_repo)[1]
 
-  foundry_name     = "aif${local.func_name}-managed"
-  foundry_project  = "fp${local.func_name}"
-  foundry_endpoint = "https://${local.foundry_name}.services.ai.azure.com/api/projects/${local.foundry_project}"
-  toolbox_endpoint = "${local.foundry_endpoint}/toolboxes/${var.workiq_toolbox_name}/mcp?api-version=v1"
+  foundry_name        = "aif${local.func_name}-managed"
+  foundry_project     = "fp${local.func_name}"
+  foundry_endpoint    = "https://${local.foundry_name}.services.ai.azure.com/api/projects/${local.foundry_project}"
+  toolbox_endpoint    = "${local.foundry_endpoint}/toolboxes/${var.workiq_toolbox_name}/mcp?api-version=v1"
+  workiq_mcp_endpoint = "https://workiq.svc.cloud.microsoft/mcp"
 
   deploy_agent = var.agent_image_uri != ""
 

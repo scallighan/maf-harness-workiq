@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 from agent_framework.exceptions import ToolExecutionException
-from azure.ai.projects.models import WorkIQPreviewToolboxTool
+from azure.ai.projects.models import MCPToolboxTool, WorkIQPreviewToolboxTool
+from azure.core.exceptions import ResourceNotFoundError
 from mcp.shared.exceptions import McpError
 from mcp.types import ErrorData
 
@@ -14,20 +15,25 @@ from workplace_agent import demo
 
 CONFIG = setup_toolbox.SetupConfig(
     project_endpoint="https://example.services.ai.azure.com/api/projects/test",
-    project_id="/subscriptions/sub/resourceGroups/rg/providers/Microsoft.CognitiveServices/accounts/a/projects/test",
+    connection_id="/subscriptions/sub/resourceGroups/rg/providers/Microsoft.CognitiveServices/accounts/a/projects/test/connections/work-iq-mcp",
     tenant_id="tenant",
     client_id="client",
     application_object_id="application",
     toolbox_name="work-iq-toolbox",
+    allowed_tools=("ask", "fetch", "get_schema", "search_paths", "fetch_blob"),
+    require_approval="always",
 )
 REDIRECT = "https://example.services.ai.azure.com/oauth/callback"
 
 
 def connection_properties() -> dict:
     return {
-        "target": setup_toolbox.WORKIQ_A2A_ENDPOINT,
+        "target": setup_toolbox.WORKIQ_MCP_ENDPOINT,
+        "category": "RemoteTool",
         "authType": "OAuth2",
-        "metadata": {"WorkIQClientId": CONFIG.client_id},
+        "authorizationUrl": "https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize",
+        "tokenUrl": "https://login.microsoftonline.com/tenant/oauth2/v2.0/token",
+        "scopes": [setup_toolbox.WORKIQ_SCOPE, "offline_access"],
         "redirectUrl": REDIRECT,
     }
 
@@ -36,19 +42,17 @@ def credential() -> MagicMock:
     return MagicMock(get_token=MagicMock(return_value=MagicMock(token="azure-token")))
 
 
-def test_setup_creates_documented_connection_without_persisting_or_printing_secret(
+def test_setup_reads_terraform_connection_without_issuing_or_persisting_credentials(
     tmp_path: Path, capsys: pytest.CaptureFixture,
 ) -> None:
     calls = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         calls.append(request)
+        if request.method == "GET" and request.url.host == "graph.microsoft.com":
+            return httpx.Response(200, json={"web": {"redirectUris": []}})
         if request.method == "GET":
-            return httpx.Response(404)
-        if request.url.path.endswith("/addPassword"):
-            return httpx.Response(200, json={"secretText": "private-client-secret", "keyId": "key"})
-        if request.method == "PUT":
-            return httpx.Response(201, json={"properties": connection_properties()})
+            return httpx.Response(200, json={"properties": connection_properties()})
         return httpx.Response(204)
 
     path = tmp_path / "toolbox.auto.tfvars"
@@ -56,20 +60,46 @@ def test_setup_creates_documented_connection_without_persisting_or_printing_secr
         identity = credential()
         redirect = setup_toolbox.ensure_connection(CONFIG, identity, client)
         setup_toolbox.configure_redirect(CONFIG, redirect, identity, client, path)
-    put = next(request for request in calls if request.method == "PUT")
-    properties = json.loads(put.content)["properties"]
-    assert properties["category"] == "RemoteA2A"
-    assert properties["target"] == setup_toolbox.WORKIQ_A2A_ENDPOINT
-    assert properties["Scopes"] == [setup_toolbox.WORKIQ_SCOPE, "offline_access"]
-    assert properties["Credentials"]["ClientSecret"] == "private-client-secret"
+    assert [request.method for request in calls] == ["GET", "GET", "PATCH"]
     patch = next(request for request in calls if request.method == "PATCH")
     assert json.loads(patch.content) == {"web": {"redirectUris": [REDIRECT]}}
     assert path.read_text() == f"workiq_toolbox_redirect_uri = {json.dumps(REDIRECT)}\n"
     assert list(tmp_path.iterdir()) == [path]
-    assert "private-client-secret" not in capsys.readouterr().out
+    assert "azure-token" not in capsys.readouterr().out
 
 
-def test_setup_reuses_connection_and_toolbox_without_rotating_credentials() -> None:
+@pytest.mark.parametrize("existing", [
+    ["https://global.consent.azure-apim.net/redirect/consent"],
+    ["https://global.consent.azure-apim.net/redirect/consent", REDIRECT],
+])
+def test_setup_preserves_foundry_consent_redirects(tmp_path: Path, existing: list[str]) -> None:
+    requests = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(200, json={"web": {"redirectUris": existing}})
+        return httpx.Response(204)
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        setup_toolbox.configure_redirect(
+            CONFIG, REDIRECT, credential(), client, tmp_path / "toolbox.auto.tfvars",
+        )
+    if REDIRECT in existing:
+        assert [request.method for request in requests] == ["GET"]
+    else:
+        assert json.loads(requests[-1].content) == {"web": {"redirectUris": [*existing, REDIRECT]}}
+
+
+def mcp_tool() -> MCPToolboxTool:
+    return MCPToolboxTool(
+        server_label="workiq", server_url=setup_toolbox.WORKIQ_MCP_ENDPOINT,
+        project_connection_id=CONFIG.connection_id,
+        allowed_tools=list(CONFIG.allowed_tools), require_approval=CONFIG.require_approval,
+    )
+
+
+def test_setup_reuses_connection_and_matching_mcp_toolbox() -> None:
     requests = []
 
     def respond(request: httpx.Request) -> httpx.Response:
@@ -84,41 +114,77 @@ def test_setup_reuses_connection_and_toolbox_without_rotating_credentials() -> N
     project.toolboxes.get.return_value = MagicMock(default_version="2")
     project.toolboxes.get_version.return_value = MagicMock(
         name=CONFIG.toolbox_name, version="2",
-        tools=[WorkIQPreviewToolboxTool(project_connection_id=CONFIG.connection_id)],
+        tools=[mcp_tool()],
     )
     assert setup_toolbox.ensure_toolbox(CONFIG, project) == "2"
     project.toolboxes.create_version.assert_not_called()
     project.toolboxes.update.assert_not_called()
 
 
-def test_setup_removes_new_password_when_connection_creation_fails() -> None:
+def test_setup_missing_connection_requires_terraform_instead_of_creating_credentials() -> None:
     requests = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.method == "GET":
-            return httpx.Response(404)
-        if request.url.path.endswith("/addPassword"):
-            return httpx.Response(200, json={"secretText": "secret", "keyId": "new-key"})
-        if request.method == "PUT":
-            return httpx.Response(400)
-        return httpx.Response(204)
+        return httpx.Response(404)
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         with pytest.raises(httpx.HTTPStatusError):
             setup_toolbox.ensure_connection(CONFIG, credential(), client)
-    assert requests[-1].url.path.endswith("/removePassword")
-    assert json.loads(requests[-1].content) == {"keyId": "new-key"}
+    assert len(requests) == 1
+    assert requests[0].method == "GET"
 
 
-def test_setup_refuses_to_overwrite_another_apps_connection() -> None:
+@pytest.mark.parametrize("changed", [
+    {"category": "RemoteA2A"},
+    {"target": "https://other.example.com/mcp"},
+    {"authorizationUrl": "https://login.microsoftonline.com/other/oauth2/v2.0/authorize"},
+    {"scopes": ["unexpected.scope"]},
+])
+def test_setup_refuses_mismatched_connection(changed: dict) -> None:
     properties = connection_properties()
-    properties["metadata"] = {"WorkIQClientId": "another-client"}
+    properties.update(changed)
     with httpx.Client(transport=httpx.MockTransport(
         lambda request: httpx.Response(200, json={"properties": properties}),
     )) as client:
         with pytest.raises(RuntimeError, match="does not match"):
             setup_toolbox.ensure_connection(CONFIG, credential(), client)
+
+
+@pytest.mark.parametrize("previous", [
+    WorkIQPreviewToolboxTool(project_connection_id=CONFIG.connection_id),
+    MCPToolboxTool(
+        server_label="workiq", server_url=setup_toolbox.WORKIQ_MCP_ENDPOINT,
+        project_connection_id=CONFIG.connection_id, allowed_tools=["ask"], require_approval="never",
+    ),
+])
+def test_setup_publishes_generic_mcp_version_with_requested_controls(previous) -> None:
+    project = MagicMock()
+    project.toolboxes.get.return_value = MagicMock(default_version="1")
+    project.toolboxes.get_version.return_value = MagicMock(tools=[previous])
+    project.toolboxes.create_version.return_value = MagicMock(name=CONFIG.toolbox_name, version="2")
+    assert setup_toolbox.ensure_toolbox(CONFIG, project) == "2"
+    published = project.toolboxes.create_version.call_args.kwargs["tools"]
+    assert len(published) == 1
+    assert published[0].as_dict() == mcp_tool().as_dict()
+    project.toolboxes.update.assert_called_once_with(CONFIG.toolbox_name, default_version="2")
+
+
+def test_setup_first_toolbox_uses_automatic_default_version() -> None:
+    project = MagicMock()
+    project.toolboxes.get.side_effect = ResourceNotFoundError("not found")
+    project.toolboxes.create_version.return_value = MagicMock(name=CONFIG.toolbox_name, version="1")
+    assert setup_toolbox.ensure_toolbox(CONFIG, project) == "1"
+    project.toolboxes.update.assert_not_called()
+
+
+def test_setup_failed_publication_does_not_promote_a_version() -> None:
+    project = MagicMock()
+    project.toolboxes.get_version.return_value = MagicMock(tools=[])
+    project.toolboxes.create_version.side_effect = RuntimeError("publish failed")
+    with pytest.raises(RuntimeError, match="publish failed"):
+        setup_toolbox.ensure_toolbox(CONFIG, project)
+    project.toolboxes.update.assert_not_called()
 
 
 def consent_error(link: str) -> ToolExecutionException:

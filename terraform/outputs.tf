@@ -55,6 +55,22 @@ output "workiq_toolbox_application_object_id" {
   value = azuread_application.toolbox.object_id
 }
 
+output "workiq_mcp_connection_id" {
+  value = azapi_resource.workiq_mcp.id
+}
+
+output "workiq_mcp_endpoint" {
+  value = local.workiq_mcp_endpoint
+}
+
+output "workiq_mcp_allowed_tools" {
+  value = var.workiq_mcp_allowed_tools
+}
+
+output "workiq_mcp_require_approval" {
+  value = var.workiq_mcp_require_approval
+}
+
 output "cosmos_endpoint" {
   value = azurerm_cosmosdb_account.this.endpoint
 }

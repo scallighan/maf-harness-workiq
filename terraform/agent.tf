@@ -48,5 +48,6 @@ resource "azapi_data_plane_resource" "agent" {
     azurerm_role_assignment.current_user_project_manager,
     azurerm_role_assignment.current_user_foundry_user,
     azuread_service_principal.toolbox,
+    azapi_resource.workiq_mcp,
   ]
 }

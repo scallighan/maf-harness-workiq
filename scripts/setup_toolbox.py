@@ -1,4 +1,4 @@
-"""Configure the documented Work IQ OAuth connection and publish its Foundry Toolbox."""
+"""Publish generic Work IQ MCP tools using the Terraform-managed OAuth connection."""
 
 from __future__ import annotations
 
@@ -7,18 +7,18 @@ import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 import httpx
 from azure.ai.projects import AIProjectClient
-from azure.ai.projects.models import WorkIQPreviewToolboxTool
+from azure.ai.projects.models import MCPToolboxTool
 from azure.core.exceptions import ResourceNotFoundError
 from azure.identity import AzureCliCredential
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKIQ_A2A_ENDPOINT = "https://workiq.svc.cloud.microsoft/a2a/"
+WORKIQ_MCP_ENDPOINT = "https://workiq.svc.cloud.microsoft/mcp"
 WORKIQ_SCOPE = "api://workiq.svc.cloud.microsoft/WorkIQAgent.Ask"
 
 
@@ -31,78 +31,39 @@ def terraform_output(name: str) -> str:
 @dataclass(frozen=True)
 class SetupConfig:
     project_endpoint: str
-    project_id: str
+    connection_id: str
     tenant_id: str
     client_id: str
     application_object_id: str
     toolbox_name: str
-
-    @property
-    def connection_id(self) -> str:
-        return f"{self.project_id}/connections/workiq-toolbox"
+    allowed_tools: tuple[str, ...]
+    require_approval: Literal["always", "never"]
 
 
 def ensure_connection(
     config: SetupConfig, credential: AzureCliCredential, client: httpx.Client,
 ) -> str:
-    arm_url = f"https://management.azure.com{config.connection_id}?api-version=2025-04-01-preview"
-    arm_headers = {
-        "Authorization": f"Bearer {credential.get_token('https://management.azure.com/.default').token}",
-    }
-    response = client.get(arm_url, headers=arm_headers)
-    if response.status_code == 404:
-        graph_headers = {
-            "Authorization": f"Bearer {credential.get_token('https://graph.microsoft.com/.default').token}",
-        }
-        application_url = f"https://graph.microsoft.com/v1.0/applications/{config.application_object_id}"
-        password = client.post(
-            f"{application_url}/addPassword", headers=graph_headers,
-            json={"passwordCredential": {
-                "displayName": "Foundry Work IQ Toolbox",
-                "endDateTime": (datetime.now(UTC) + timedelta(days=90)).isoformat(),
-            }},
-        )
-        password.raise_for_status()
-        password_data = password.json()
-        secret = password_data["secretText"]
-        key_id = password_data["keyId"]
-        properties = {
-            "authType": "OAuth2",
-            "group": "ServicesAndApps",
-            "category": "RemoteA2A",
-            "target": WORKIQ_A2A_ENDPOINT,
-            "isSharedToAll": True,
-            "AuthorizationUrl": f"https://login.microsoftonline.com/{config.tenant_id}/oauth2/v2.0/authorize",
-            "TokenUrl": f"https://login.microsoftonline.com/{config.tenant_id}/oauth2/v2.0/token",
-            "RefreshUrl": f"https://login.microsoftonline.com/{config.tenant_id}/oauth2/v2.0/token",
-            "Scopes": [WORKIQ_SCOPE, "offline_access"],
-            "Credentials": {"ClientId": config.client_id, "ClientSecret": secret},
-            "metadata": {
-                "ApiType": "Azure", "WorkIQClientId": config.client_id,
-                "WorkIQPasswordKeyId": key_id,
-            },
-        }
-        try:
-            response = client.put(arm_url, headers=arm_headers, json={"properties": properties})
-            response.raise_for_status()
-        except httpx.HTTPError:
-            cleanup = client.post(
-                f"{application_url}/removePassword", headers=graph_headers, json={"keyId": key_id},
-            )
-            cleanup.raise_for_status()
-            raise
-        print("Created Work IQ OAuth connection; its client secret is stored only in Foundry.")
-    else:
-        response.raise_for_status()
-        print("Reusing the existing Work IQ OAuth connection.")
-
+    response = client.get(
+        f"https://management.azure.com{config.connection_id}?api-version=2025-06-01",
+        headers={"Authorization": f"Bearer {credential.get_token('https://management.azure.com/.default').token}"},
+    )
+    response.raise_for_status()
     properties = response.json()["properties"]
     if (
-        properties.get("target") != WORKIQ_A2A_ENDPOINT
+        properties.get("target") != WORKIQ_MCP_ENDPOINT
+        or properties.get("category") != "RemoteTool"
         or properties.get("authType") != "OAuth2"
-        or properties.get("metadata", {}).get("WorkIQClientId") != config.client_id
+        or properties.get("authorizationUrl") != (
+            f"https://login.microsoftonline.com/{config.tenant_id}/oauth2/v2.0/authorize"
+        )
+        or properties.get("tokenUrl") != (
+            f"https://login.microsoftonline.com/{config.tenant_id}/oauth2/v2.0/token"
+        )
+        or set(properties.get("scopes", [])) != {WORKIQ_SCOPE, "offline_access"}
     ):
-        raise RuntimeError("Existing Work IQ connection does not match this stack's dedicated OAuth app.")
+        raise RuntimeError(
+            "Terraform's Work IQ connection does not match the expected MCP OAuth configuration."
+        )
     redirect = properties.get("redirectUrl")
     if not isinstance(redirect, str):
         raise RuntimeError("Foundry did not return the Work IQ connection's OAuth redirect URL.")
@@ -116,12 +77,17 @@ def configure_redirect(
     config: SetupConfig, redirect: str, credential: AzureCliCredential,
     client: httpx.Client, inputs_path: Path,
 ) -> None:
-    response = client.patch(
-        f"https://graph.microsoft.com/v1.0/applications/{config.application_object_id}",
-        headers={"Authorization": f"Bearer {credential.get_token('https://graph.microsoft.com/.default').token}"},
-        json={"web": {"redirectUris": [redirect]}},
-    )
+    application_url = f"https://graph.microsoft.com/v1.0/applications/{config.application_object_id}"
+    headers = {"Authorization": f"Bearer {credential.get_token('https://graph.microsoft.com/.default').token}"}
+    response = client.get(application_url, headers=headers, params={"$select": "web"})
     response.raise_for_status()
+    redirects = response.json()["web"]["redirectUris"]
+    if not isinstance(redirects, list) or not all(isinstance(uri, str) for uri in redirects):
+        raise RuntimeError("Entra returned invalid OAuth redirect URIs.")
+    if redirect not in redirects:
+        redirects.append(redirect)
+        response = client.patch(application_url, headers=headers, json={"web": {"redirectUris": redirects}})
+        response.raise_for_status()
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -136,37 +102,52 @@ def configure_redirect(
 
 
 def ensure_toolbox(config: SetupConfig, project: AIProjectClient) -> str:
+    desired = MCPToolboxTool(
+        server_label="workiq",
+        server_url=WORKIQ_MCP_ENDPOINT,
+        project_connection_id=config.connection_id,
+        allowed_tools=list(config.allowed_tools),
+        require_approval=config.require_approval,
+    )
     try:
         toolbox = project.toolboxes.get(config.toolbox_name)
     except ResourceNotFoundError:
-        version = project.toolboxes.create_version(
-            name=config.toolbox_name,
-            description="Work IQ through the documented Foundry Toolbox integration.",
-            tools=[WorkIQPreviewToolboxTool(project_connection_id=config.connection_id)],
-        )
-        print(f"Created Work IQ toolbox {version.name}:{version.version}.")
-        return version.version
-    version = project.toolboxes.get_version(config.toolbox_name, toolbox.default_version)
-    if (
-        len(version.tools) != 1
-        or not isinstance(version.tools[0], WorkIQPreviewToolboxTool)
-        or version.tools[0].project_connection_id != config.connection_id
-    ):
-        raise RuntimeError(
-            "Existing toolbox configuration differs; review it before changing its default version."
-        )
-    print(f"Reusing Work IQ toolbox {version.name}:{version.version}.")
+        toolbox = None
+    if toolbox is not None:
+        version = project.toolboxes.get_version(config.toolbox_name, toolbox.default_version)
+        if len(version.tools) == 1 and isinstance(version.tools[0], MCPToolboxTool):
+            actual = version.tools[0].as_dict()
+            if all(actual.get(key) == value for key, value in desired.as_dict().items()):
+                print(f"Reusing Work IQ MCP toolbox {version.name}:{version.version}.")
+                return version.version
+    version = project.toolboxes.create_version(
+        name=config.toolbox_name,
+        description="Direct Work IQ MCP tools with explicit allowlist and approval policy.",
+        tools=[desired],
+    )
+    if toolbox is not None:
+        project.toolboxes.update(config.toolbox_name, default_version=version.version)
+    print(f"Published Work IQ MCP toolbox {version.name}:{version.version}.")
     return version.version
 
 
 def main() -> None:
+    approval = terraform_output("workiq_mcp_require_approval")
+    if approval != "always" and approval != "never":
+        raise RuntimeError("Terraform MCP approval policy must be always or never.")
+    allowed_tools = json.loads(subprocess.check_output(
+        ["terraform", "-chdir=terraform", "output", "-json", "workiq_mcp_allowed_tools"],
+        cwd=ROOT, text=True,
+    ))
     config = SetupConfig(
         project_endpoint=terraform_output("foundry_project_endpoint"),
-        project_id=terraform_output("foundry_project_id"),
+        connection_id=terraform_output("workiq_mcp_connection_id"),
         tenant_id=terraform_output("tenant_id"),
         client_id=terraform_output("workiq_toolbox_client_id"),
         application_object_id=terraform_output("workiq_toolbox_application_object_id"),
         toolbox_name=terraform_output("workiq_toolbox_name"),
+        allowed_tools=tuple(allowed_tools),
+        require_approval=approval,
     )
     print("Granting the dedicated app's Work IQ delegated admin consent (tenant administrator required).")
     subprocess.run(
@@ -185,10 +166,7 @@ def main() -> None:
         f"/versions/{version}/mcp?api-version=v1"
     )
     print("Each user still needs to authorize the Foundry OAuth consent link before using Work IQ.")
-    print(
-        "The client secret has a 90-day lifetime from creation; "
-        "rotate it in Entra and recreate the connection."
-    )
+    print("PDF-byte retrieval and exact page verification remain deferred; do not claim verified pages.")
 
 
 if __name__ == "__main__":

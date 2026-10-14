@@ -44,12 +44,63 @@ variable "user_object_ids" {
 
 variable "workiq_toolbox_name" {
   type        = string
-  description = "Foundry Toolbox containing the documented Work IQ built-in tool."
+  description = "Foundry Toolbox exposing the custom Work IQ MCP connection."
   default     = "work-iq-toolbox"
 
   validation {
     condition     = can(regex("^[A-Za-z0-9_-]+$", var.workiq_toolbox_name))
     error_message = "Use a toolbox name containing only letters, digits, underscores and hyphens."
+  }
+}
+
+variable "workiq_mcp_connection_name" {
+  type        = string
+  description = "Terraform-managed custom OAuth MCP connection; import an existing connection before applying."
+  default     = "work-iq-mcp"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_-]+$", var.workiq_mcp_connection_name))
+    error_message = "Use a connection name containing only letters, digits, underscores and hyphens."
+  }
+}
+
+variable "workiq_mcp_client_secret" {
+  type        = string
+  description = "Existing OAuth app secret for connection creation/rotation only; omitted when importing/reusing stored credentials."
+  sensitive   = true
+  ephemeral   = true
+  default     = null
+}
+
+variable "workiq_mcp_secret_version" {
+  type        = string
+  description = "Increment when supplying a new ephemeral secret to rotate the connection credential."
+  default     = "0"
+}
+
+variable "workiq_mcp_allowed_tools" {
+  type        = list(string)
+  description = "Exact upstream MCP tool names exposed to the agent; defaults exclude mutation tools."
+  default     = ["ask", "fetch", "get_schema", "search_paths", "fetch_blob"]
+
+  validation {
+    condition = (
+      length(var.workiq_mcp_allowed_tools) > 0 &&
+      length(distinct(var.workiq_mcp_allowed_tools)) == length(var.workiq_mcp_allowed_tools) &&
+      alltrue([for name in var.workiq_mcp_allowed_tools : can(regex("^[A-Za-z0-9_-]+$", name))])
+    )
+    error_message = "Provide a nonempty list of unique upstream MCP tool names."
+  }
+}
+
+variable "workiq_mcp_require_approval" {
+  type        = string
+  description = "Whether the agent must obtain confirmation before calling the allowed MCP tools."
+  default     = "always"
+
+  validation {
+    condition     = contains(["always", "never"], var.workiq_mcp_require_approval)
+    error_message = "Use always or never for MCP tool approval."
   }
 }
 

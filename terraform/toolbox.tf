@@ -22,11 +22,61 @@ resource "azuread_application" "toolbox" {
     }
   }
 
+  lifecycle {
+    # Setup and Foundry consent manage these URIs; platform applies must not clear them.
+    ignore_changes = [identifier_uris, web[0].redirect_uris]
+  }
+
   depends_on = [azuread_service_principal.workiq]
 }
 
 resource "azuread_service_principal" "toolbox" {
   client_id = azuread_application.toolbox.client_id
+}
+
+resource "azapi_resource" "workiq_mcp" {
+  type                      = "Microsoft.CognitiveServices/accounts/projects/connections@2025-06-01"
+  name                      = var.workiq_mcp_connection_name
+  parent_id                 = azapi_resource.ai_foundry_project.id
+  schema_validation_enabled = false
+
+  body = {
+    properties = {
+      authType         = "OAuth2"
+      category         = "RemoteTool"
+      group            = "GenericProtocol"
+      target           = local.workiq_mcp_endpoint
+      isSharedToAll    = false
+      authorizationUrl = "https://login.microsoftonline.com/${data.azurerm_client_config.current.tenant_id}/oauth2/v2.0/authorize"
+      tokenUrl         = "https://login.microsoftonline.com/${data.azurerm_client_config.current.tenant_id}/oauth2/v2.0/token"
+      refreshUrl       = "https://login.microsoftonline.com/${data.azurerm_client_config.current.tenant_id}/oauth2/v2.0/token"
+      scopes           = ["api://workiq.svc.cloud.microsoft/WorkIQAgent.Ask", "offline_access"]
+      metadata = {
+        oAuthProvider = "custom"
+        type          = "custom_MCP"
+      }
+    }
+  }
+
+  # Import preserves Foundry's stored secret. Supply an ephemeral value only for creation/rotation.
+  sensitive_body = var.workiq_mcp_client_secret == null ? {} : {
+    properties = {
+      credentials = {
+        clientId     = azuread_application.toolbox.client_id
+        clientSecret = var.workiq_mcp_client_secret
+      }
+    }
+  }
+  sensitive_body_version = var.workiq_mcp_secret_version == "0" ? {} : {
+    "properties.credentials" = var.workiq_mcp_secret_version
+  }
+  response_export_values = ["properties.redirectUrl"]
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [azuread_service_principal.toolbox]
 }
 
 resource "azurerm_role_assignment" "agent_toolbox_user" {
