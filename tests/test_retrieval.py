@@ -4,12 +4,13 @@ from copy import deepcopy
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from agent_framework import Content, FunctionTool
+from agent_framework import AgentResponseUpdate, Content, FunctionTool
 from agent_framework.exceptions import ToolExecutionException
 from agent_framework_foundry_hosting import FoundryToolbox
 
 from workplace_agent import retrieval
-from workplace_agent.execution import tool_output_failed
+from workplace_agent.execution import ToolTimingRecorder, tool_output_failed, unwrap_tool_output
+from workplace_agent.progress import SourceSearchProgress
 from workplace_agent.retrieval import ParallelWorkIQToolbox
 
 MIME = "application/vnd.ms-workiq.retrieval"
@@ -66,8 +67,16 @@ async def test_file_and_email_retrieval_really_overlap_and_preserve_scoped_paylo
         ],
     }
     original = deepcopy(arguments)
-    toolbox = ParallelWorkIQToolbox(credential, url="https://example.services.ai.azure.com/toolbox")
-    result = await toolbox.call_tool("workiq___retrieve", **arguments)
+    recorder = ToolTimingRecorder()
+    progress = SourceSearchProgress(recorder)
+    toolbox = ParallelWorkIQToolbox(
+        credential, url="https://example.services.ai.azure.com/toolbox", progress=progress,
+    )
+    token = recorder.active_call_id.set("parent")
+    try:
+        result = await toolbox.call_tool("workiq___retrieve", **arguments)
+    finally:
+        recorder.active_call_id.reset(token)
     assert not isinstance(result, str)
     assert len(result) == 4
     for index, source in ((0, "OneDriveAndSharePoint"), (2, "Email")):
@@ -81,6 +90,21 @@ async def test_file_and_email_retrieval_really_overlap_and_preserve_scoped_paylo
     assert arguments == original
     assert all(call["query"] == arguments["query"] and len(call["capabilities"]) == 1 for call in calls)
     assert len(closed) == 2
+    updates = [progress.updates.get_nowait() for _ in range(progress.updates.qsize())]
+    results = []
+    for update in updates:
+        assert isinstance(update, AgentResponseUpdate)
+        results.extend(content for content in update.contents if content.type == "function_result")
+    assert len(results) == 2
+    for content in results:
+        metadata = json.loads(content.result)["__workiq_tool_execution__"]
+        is_email = metadata["name"].endswith("Email")
+        output, timing = unwrap_tool_output(
+            content.result, call_id=content.call_id, name=metadata["name"],
+        )
+        expected_failure = failed and is_email
+        assert output == {"status": "failed" if expected_failure else "completed"}
+        assert timing and timing.failed is expected_failure
 
 
 @pytest.mark.parametrize("capabilities", [

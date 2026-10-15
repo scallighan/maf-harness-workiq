@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from copy import copy
 from datetime import UTC, datetime
 from typing import Literal
@@ -12,6 +13,8 @@ from agent_framework import (
     AgentContext,
     AgentMiddleware,
     AgentResponseUpdate,
+    ChatContext,
+    ChatMiddleware,
     Content,
     FunctionInvocationContext,
     FunctionMiddleware,
@@ -36,6 +39,7 @@ class ExecutionTiming(BaseModel):
 class ToolTimingRecorder(FunctionMiddleware):
     def __init__(self) -> None:
         self.timings: dict[str, ExecutionTiming] = {}
+        self.active_call_id: ContextVar[str | None] = ContextVar("workiq_active_call_id", default=None)
 
     async def process(
         self, context: FunctionInvocationContext, call_next: Callable[[], Awaitable[None]],
@@ -48,14 +52,50 @@ class ToolTimingRecorder(FunctionMiddleware):
         started_at = datetime.now(UTC)
         started = time.perf_counter_ns()
         failed = True
+        token = self.active_call_id.set(call_id)
         try:
             await call_next()
             failed = tool_output_failed(context.result, skill=context.function.name == "load_skill")
         finally:
+            self.active_call_id.reset(token)
             self.timings[call_id] = ExecutionTiming(
                 call_id=call_id, name=context.function.name, started_at=started_at,
                 duration_ms=(time.perf_counter_ns() - started) // 1_000_000, failed=failed,
             )
+
+
+class ModelTimingLogger(ChatMiddleware):
+    async def process(self, context: ChatContext, call_next: Callable[[], Awaitable[None]]) -> None:
+        started = time.perf_counter_ns()
+        first_update_ms: int | None = None
+        reported = False
+
+        def first_update(update):
+            nonlocal first_update_ms
+            if first_update_ms is None:
+                first_update_ms = (time.perf_counter_ns() - started) // 1_000_000
+            return update
+
+        def completed(response):
+            nonlocal reported
+            reported = True
+            logger.info(
+                "Model call completed: elapsed_ms=%d first_update_ms=%s",
+                (time.perf_counter_ns() - started) // 1_000_000, first_update_ms,
+            )
+            return response
+
+        def closed() -> None:
+            if not reported:
+                logger.warning("Model call interrupted before completion.")
+
+        if context.stream:
+            context.stream_update_transforms.append(first_update)
+            context.stream_result_transforms.append(completed)
+            context.stream_cleanup_hooks.append(closed)
+        await call_next()
+        if not context.stream:
+            completed(context.result)
 
 
 class ToolTimingOutput(AgentMiddleware):

@@ -118,7 +118,7 @@ variable "ui_image_uri" {
 variable "ui_min_replicas" {
   type        = number
   description = "Minimum Container Apps UI replicas; zero scales to zero when idle."
-  default     = 0
+  default     = 1
 
   validation {
     condition     = var.ui_min_replicas >= 0 && var.ui_min_replicas <= 2 && floor(var.ui_min_replicas) == var.ui_min_replicas

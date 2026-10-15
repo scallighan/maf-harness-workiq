@@ -34,13 +34,15 @@ export const SessionSchema = z.object({
 export const ActivitySchema = z.object({
   call_id: z.string(),
   name: z.string(),
-  kind: z.enum(["tool", "skill"]),
+  kind: z.enum(["tool", "skill", "search"]),
   skill: z.string().nullable(),
+  source: z.enum(["Email", "OneDriveAndSharePoint"]).nullable().optional(),
+  parent_call_id: z.string().nullable().optional(),
   status: z.enum(["running", "completed", "failed", "cancelled"]),
   started_at: z.string(),
   duration_ms: z.number().nonnegative().nullable(),
   timing_source: z.literal("runtime").nullable().default(null),
-});
+}).transform((call) => call.source ? { ...call, kind: "search" as const } : call);
 
 export const RunSchema = z.object({
   id: z.string().uuid(),
@@ -51,6 +53,13 @@ export const RunSchema = z.object({
   response_id: z.string().nullable(),
   assistant_message_ids: z.array(z.string()),
   activity: z.array(ActivitySchema),
+  stage: z.enum(["connecting", "planning", "loading_skill", "searching", "running_tool", "answering"]).optional(),
+  latency: z.object({
+    preparation_ms: z.number().nonnegative().nullable(),
+    first_event_ms: z.number().nonnegative().nullable(),
+    first_text_ms: z.number().nonnegative().nullable(),
+    response_ms: z.number().nonnegative().nullable(),
+  }).optional(),
 });
 
 export const ToolPayloadSchema = z.object({
@@ -108,6 +117,53 @@ export function protocolMessages(messages: ChatMessage[]): Message[] {
     : { id: message.id, role: "assistant", content: message.content });
 }
 
+export function mergeStreamMessages(previous: ChatMessage[], incoming: readonly Readonly<Message>[]): ChatMessage[] {
+  const byId = new Map(previous.map((message) => [message.id, message]));
+  const next = incoming.flatMap((message) => {
+    if ((message.role !== "user" && message.role !== "assistant") || typeof message.content !== "string") {
+      return [];
+    }
+    const prior = byId.get(message.id);
+    if (prior && prior.role === message.role && prior.content === message.content) return [prior];
+    return [ChatMessageSchema.parse({ ...message, references: prior?.references ?? [] })];
+  });
+  return next.length === previous.length && next.every((message, index) => message === previous[index])
+    ? previous : next;
+}
+
+export class MessageBatcher {
+  private pending: readonly Readonly<Message>[] | null = null;
+  private timer: ReturnType<typeof setTimeout> | undefined;
+
+  constructor(
+    private readonly apply: (messages: readonly Readonly<Message>[]) => void,
+    private readonly onError: (error: unknown) => void,
+  ) {}
+
+  push(messages: readonly Readonly<Message>[]) {
+    this.pending = messages;
+    if (this.timer !== undefined) return;
+    this.timer = setTimeout(() => {
+      try { this.flush(); }
+      catch (error) { this.onError(error); }
+    }, 50);
+  }
+
+  flush() {
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    const pending = this.pending;
+    this.pending = null;
+    if (pending) this.apply(pending);
+  }
+
+  cancel() {
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    this.pending = null;
+  }
+}
+
 export function mergeRun(runs: Run[], incoming: Run): Run[] {
   return [...runs.filter((run) => run.id !== incoming.id), incoming]
     .sort((left, right) => left.started_at.localeCompare(right.started_at));
@@ -127,9 +183,25 @@ export function toolDuration(call: ToolActivity): string {
   if (call.timing_source !== "runtime" || call.duration_ms === null) {
     return call.status === "running" ? "Timing pending" : "Timing unavailable";
   }
-  if (call.duration_ms === 0) return "<1 ms";
-  if (call.duration_ms < 1000) return `${call.duration_ms} ms`;
-  return `${(call.duration_ms / 1000).toFixed(1)}s`;
+  return durationLabel(call.duration_ms);
+}
+
+export function durationLabel(milliseconds: number): string {
+  if (milliseconds === 0) return "<1 ms";
+  if (milliseconds < 1000) return `${milliseconds} ms`;
+  return `${(milliseconds / 1000).toFixed(1)}s`;
+}
+
+export function runProgressLabel(run: Run): string {
+  const stages = {
+    connecting: "Connecting to the hosted agent",
+    planning: "Preparing the response",
+    loading_skill: "Loading research instructions",
+    searching: "Searching your work sources",
+    running_tool: "Running a tool",
+    answering: "Streaming the response",
+  };
+  return run.stage ? stages[run.stage] : "Request in progress";
 }
 
 export function errorMessage(error: unknown): string {

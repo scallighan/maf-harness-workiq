@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -14,6 +16,8 @@ from azure.cosmos.exceptions import (
 from fastapi import HTTPException
 
 from .models import RunRecord
+
+logger = logging.getLogger(__name__)
 
 
 def now() -> str:
@@ -35,6 +39,58 @@ def public_session(document: dict) -> dict:
         "updated_at": document["updated_at"],
         "running": document.get("lease_until", 0) > time.time(),
     }
+
+
+class RunCheckpointer:
+    def __init__(self, store: SessionStore, owner: str, *, interval: float = 0.25) -> None:
+        self.store = store
+        self.owner = owner
+        self.interval = interval
+        self.pending: RunRecord | None = None
+        self.changed = asyncio.Event()
+        self.closing = False
+        self.write_count = 0
+        self.write_ms = 0
+        self.task = asyncio.create_task(self.write())
+
+    def submit(self, record: RunRecord) -> None:
+        if self.task.done():
+            self.task.result()
+            raise RuntimeError("The run checkpoint writer stopped unexpectedly.")
+        self.pending = record.model_copy(deep=True)
+        self.changed.set()
+
+    async def write(self) -> None:
+        while True:
+            await self.changed.wait()
+            if not self.closing:
+                await asyncio.sleep(self.interval)
+            self.changed.clear()
+            record, self.pending = self.pending, None
+            if record is not None:
+                started = time.perf_counter_ns()
+                try:
+                    await self.store.save_run(self.owner, record)
+                finally:
+                    self.write_count += 1
+                    self.write_ms += (time.perf_counter_ns() - started) // 1_000_000
+            if self.closing and self.pending is None:
+                return
+
+    async def finish(self, record: RunRecord) -> None:
+        self.submit(record)
+        self.closing = True
+        self.changed.set()
+        await asyncio.shield(self.task)
+
+    async def cancel(self) -> None:
+        # Drain an in-flight write before fallback saves so an older snapshot cannot overwrite them.
+        self.pending = None
+        self.closing = True
+        self.changed.set()
+        results = await asyncio.gather(self.task, return_exceptions=True)
+        if isinstance(results[0], Exception):
+            logger.warning("Run checkpoint writer failed: %s", type(results[0]).__name__)
 
 
 class SessionStore:

@@ -42,6 +42,26 @@ guarantee identical rankings or complete results, so relevance, attachment cover
 and citation checks still apply. The advertised `retrieve` tool must be available
 in the tenant; existing `WorkIQAgent.Ask` delegated consent is reused.
 
+When `ask` is needed, the runtime saves Work IQ's returned `conversationId` in the
+current agent session's durable state and reuses it on later Ask calls, including
+after a hosted request restarts. It never substitutes the Foundry conversation ID
+or accepts a model-supplied ID from another session. New app sessions start new
+Ask contexts. Concurrent Ask calls are serialized to avoid forking the first
+conversation. Changing the target Ask agent requires a new app session.
+Failures retain the established ID; missing or changed IDs are
+reported explicitly rather than silently resetting context. Only the opaque
+conversation/agent identifiers are added to session state, not extra copies of
+prompts or source content. Ask context does not automatically include retrieval
+results, so fallback questions still identify their topic and specific gaps.
+
+The packaged `meeting-prep` skill is loaded for meeting/call preparation and
+matching follow-ups. It identifies the target meeting and related past meetings,
+then researches relevant email and documents using the existing document-finder
+rules. It produces a short suggested opener, three to five cited talking points,
+decisions/questions, useful pre-reads and explicit evidence/access gaps.
+Ambiguous meetings or time zones are clarified rather than guessed. It does not
+send mail, RSVP or change calendar events.
+
 **This path does not independently verify source locations.** Exposing
 `fetch_blob` alone does not verify pages, slides or other locators. The agent labels
 source-returned positions as reported and says "page not verified", "slide not
@@ -86,6 +106,7 @@ Terraform creates the Foundry project, model, guardrail, registry, observability
 Cosmos conversation history, a dedicated Toolbox OAuth application and the
 custom Work IQ MCP connection.
 Defaults are EastUS2 and `gpt-5.6-luna`; confirm quota and availability.
+The agent explicitly uses `low` reasoning effort to reduce planning latency.
 For `gpt-5.4-mini`, set both `chat_model = "gpt-5.4-mini"` and
 `chat_model_version = "2026-03-17"`.
 
@@ -260,8 +281,9 @@ The optional UI uses a VNet-injected Container Apps consumption environment with
 a dedicated Cosmos SQL private endpoint and private DNS. It reuses the existing
 registry, observability workspace and private Cosmos account; it does not enable
 Cosmos public access or key authentication. Its managed identity can access only
-the `uiSessions` container. `ui_min_replicas = 0` scales to zero when idle; use `1`
-if cold starts are undesirable.
+the `uiSessions` container. `ui_min_replicas` defaults to `1` to keep the UI warm,
+with the associated idle-replica cost. Set it to `0` to scale to zero when idle
+if cold-start latency is acceptable.
 
 Sign in with an authorized Foundry/Microsoft 365 account. The API validates the
 browser's delegated token and exchanges it on behalf of that same user for
@@ -291,6 +313,28 @@ New calls carry execution durations measured inside the agent, not the gap betwe
 receiving streamed call/result events (which may be batched). These durations
 exclude model time and delay before tool invocation. Sub-second calls show milliseconds; historical calls
 without runtime timing show **Timing unavailable**, not a misleading `0.0s`.
+Parallel retrieval also reports each real Email and OneDrive/SharePoint SDK
+search as separate source progress, including failures and cancellation. These
+entries are not additional model tool calls and do not expose document content.
+The hosted endpoint can still batch these events until near response completion,
+so source progress is not guaranteed to arrive live. Runtime durations remain
+accurate when delivery is delayed; UI optimizations do not remove upstream model
+or Work IQ latency.
+Streamed text is applied in short batches; completed Markdown answers are reused
+and automatic scrolling stops when you scroll up. You can draft the next message
+while the current response streams, without submitting overlapping prompts.
+Intermediate activity checkpoints are coalesced outside the event-delivery path;
+the run is still claimed before streaming and its final metadata is saved before
+completion. Checkpoint failures terminate the run explicitly. Independent message
+and activity history reads run concurrently after the ownership check.
+Activity includes measured server preparation, first-upstream-event, first-text
+and response-ready latency. Agent logs record model-call and source-search timing
+without prompts, document content or private reasoning. UI logs include checkpoint
+counts and write duration. Fingerprinted public JavaScript/CSS bundles are cached
+immutably; the application shell, authentication bridge and API remain uncached.
+Browser User Timing entries named `workiq:browser:first-event`,
+`workiq:browser:first-text-event` and `workiq:browser:run-ended` measure delivery
+from submission without transmitting telemetry or including prompt content.
 Expandable **Input / output** controls load the selected call from its stored
 Foundry response after the prompt finishes. Payloads remain in Foundry rather
 than being copied into Cosmos; credential fields and authentication/temporary

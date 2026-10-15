@@ -18,6 +18,7 @@ from ag_ui.core import (
 from fastapi import HTTPException
 
 from ..execution import tool_output_failed, unwrap_tool_output
+from ..progress import SOURCE_SEARCH_PREFIX, SearchSource
 from .models import RunRecord, ToolActivity
 from .references import references_from_text
 from .store import now
@@ -46,7 +47,10 @@ class ResponseEvents:
             return []
         self.text[identifier] = ""
         self.record.assistant_message_ids.append(identifier)
-        return [TextMessageStartEvent(message_id=identifier, role="assistant")]
+        self.record.stage = "answering"
+        return [
+            self.activity_event(), TextMessageStartEvent(message_id=identifier, role="assistant"),
+        ]
 
     def finish_text(self, identifier: str) -> list[BaseEvent]:
         if identifier in self.ended_messages:
@@ -60,9 +64,18 @@ class ResponseEvents:
             raise HTTPException(status_code=502, detail="Foundry returned an invalid tool call.")
         if identifier in self.calls:
             return []
+        source: SearchSource | None = None
+        if name == f"{SOURCE_SEARCH_PREFIX}Email":
+            source = "Email"
+        elif name == f"{SOURCE_SEARCH_PREFIX}OneDriveAndSharePoint":
+            source = "OneDriveAndSharePoint"
         activity = ToolActivity(
             call_id=identifier, name=name, started_at=now(),
-            kind="skill" if name in SKILL_TOOLS else "tool",
+            kind="skill" if name in SKILL_TOOLS else "tool", source=source,
+        )
+        self.record.stage = (
+            "searching" if source or name == "workiq___retrieve"
+            else "loading_skill" if activity.kind == "skill" else "running_tool"
         )
         self.calls[identifier] = activity
         if isinstance(item.get("id"), str):
@@ -82,14 +95,26 @@ class ResponseEvents:
             events.append(ToolCallArgsEvent(tool_call_id=identifier, delta=arguments))
             self.arguments[identifier] = arguments
         activity = self.calls[identifier]
-        if activity.kind == "skill":
+        if activity.kind == "skill" or activity.source is not None:
             try:
                 values = json.loads(arguments)
             except json.JSONDecodeError as error:
                 raise HTTPException(
-                    status_code=502, detail="Foundry returned invalid skill arguments.",
+                    status_code=502, detail="Foundry returned invalid activity arguments.",
                 ) from error
-            if isinstance(values, dict):
+            if activity.source is not None:
+                parent = values.get("parent_call_id") if isinstance(values, dict) else None
+                if (
+                    not isinstance(values, dict) or set(values) != {"source", "parent_call_id"}
+                    or values["source"] != activity.source or not isinstance(parent, str)
+                    or parent not in self.calls
+                    or self.calls[parent].name != "workiq___retrieve"
+                ):
+                    raise HTTPException(
+                        status_code=502, detail="Foundry returned invalid source search metadata.",
+                    )
+                activity.parent_call_id = parent
+            elif isinstance(values, dict):
                 name = values.get("skill_name") or values.get("skill") or values.get("name")
                 if isinstance(name, str) and name:
                     activity.skill = name[:256]
@@ -113,10 +138,20 @@ class ResponseEvents:
             raise HTTPException(status_code=502, detail="Foundry returned invalid tool timing.") from error
         failed = tool_output_failed(output, skill=activity.kind == "skill") or bool(timing and timing.failed)
         activity.status = "failed" if failed else "completed"
+        if activity.source is not None:
+            if (
+                timing is None or not isinstance(output, dict) or set(output) != {"status"}
+                or output["status"] not in {"completed", "failed", "cancelled"}
+                or timing.failed != (output["status"] != "completed")
+            ):
+                raise HTTPException(status_code=502, detail="Foundry returned invalid source search status.")
+            activity.status = output["status"]
         if timing:
             activity.started_at = timing.started_at.isoformat()
             activity.duration_ms = timing.duration_ms
             activity.timing_source = "runtime"
+        if not any(call.status == "running" for call in self.record.activity):
+            self.record.stage = "planning"
         return [
             ToolCallResultEvent(
                 message_id=f"tool-{uuid4()}", tool_call_id=identifier,
@@ -193,6 +228,7 @@ class ResponseEvents:
         kind = event["type"]
         if kind == "response.created":
             self.record.response_id = event["response"]["id"]
+            self.record.stage = "planning"
             return [self.activity_event()]
         if kind in ("response.output_text.delta", "response.refusal.delta"):
             identifier, delta = event["item_id"], event["delta"]

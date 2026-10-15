@@ -36,6 +36,30 @@ describe("assistant Markdown", () => {
 });
 
 describe("run progress", () => {
+  it("shows real source progress separately from model tool calls and displays measured response latency", () => {
+    const run: Run = {
+      id: "11111111-1111-4111-8111-111111111111",
+      session_id: "22222222-2222-4222-8222-222222222222",
+      started_at: "2026-10-15T10:00:00Z", prompt_preview: "Find sources", status: "running",
+      response_id: "resp1", assistant_message_ids: [], stage: "searching",
+      latency: { preparation_ms: 10, first_event_ms: 20, first_text_ms: 3500, response_ms: null },
+      activity: [{
+        call_id: "source1", name: "workiq_source_search___Email", kind: "search", source: "Email",
+        parent_call_id: "parent", skill: null, status: "completed", started_at: "2026-10-15T10:00:01Z",
+        duration_ms: 2400, timing_source: "runtime",
+      }],
+    };
+    const html = renderToStaticMarkup(<Activity run={run} loadDetails={async () => ({
+      input: null, output: null, input_truncated: false, output_truncated: false,
+    })} />);
+    expect(html).toContain("Source search: Email");
+    expect(html).toContain("Searching your work sources");
+    expect(html).toContain("0 skill calls / 0 tool calls");
+    expect(html).toContain("First text: 3.5s");
+    expect(html).not.toContain("Input / output");
+    expect(html).not.toContain("Response ready");
+  });
+
   it("shows an obvious active state before the first tool call without inventing tool activity", () => {
     const run: Run = {
       id: "11111111-1111-4111-8111-111111111111",

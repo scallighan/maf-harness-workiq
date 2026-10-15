@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { ActivitySchema, ReferenceSchema, displayText, locationLabel, mergeRun, protocolMessages, toolDuration, type Run } from "./models";
+import { describe, expect, it, vi } from "vitest";
+import { ActivitySchema, MessageBatcher, ReferenceSchema, displayText, locationLabel, mergeRun, mergeStreamMessages, protocolMessages, toolDuration, type Run } from "./models";
 
 describe("reference presentation", () => {
   it("keeps normal answer text and hides machine metadata, including unfinished streaming blocks", () => {
@@ -18,7 +18,56 @@ describe("reference presentation", () => {
   });
 });
 
+describe("streaming message updates", () => {
+  it("preserves completed messages and references while replacing only changed text", () => {
+    const source = ReferenceSchema.parse({ title: "Plan", url: "https://contoso.sharepoint.com/plan" });
+    const previous = [
+      { id: "old", role: "assistant" as const, content: "Completed answer", references: [source] },
+      { id: "live", role: "assistant" as const, content: "Part", references: [] },
+    ];
+    const next = mergeStreamMessages(previous, [
+      { id: "old", role: "assistant", content: "Completed answer" },
+      { id: "live", role: "assistant", content: "Partial answer" },
+    ]);
+    expect(next[0]).toBe(previous[0]);
+    expect(next[0].references).toBe(previous[0].references);
+    expect(next[1].content).toBe("Partial answer");
+    expect(mergeStreamMessages(next, protocolMessages(next))).toBe(next);
+  });
+
+  it("coalesces token bursts, flushes final text immediately and cancels stale updates", () => {
+    vi.useFakeTimers();
+    try {
+      const apply = vi.fn();
+      const batch = new MessageBatcher(apply, (error) => { throw error; });
+      batch.push([{ id: "live", role: "assistant", content: "A" }]);
+      batch.push([{ id: "live", role: "assistant", content: "AB" }]);
+      vi.advanceTimersByTime(49);
+      expect(apply).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(apply).toHaveBeenCalledExactlyOnceWith([{ id: "live", role: "assistant", content: "AB" }]);
+      batch.push([{ id: "live", role: "assistant", content: "ABC" }]);
+      batch.flush();
+      expect(apply).toHaveBeenLastCalledWith([{ id: "live", role: "assistant", content: "ABC" }]);
+      batch.push([{ id: "live", role: "assistant", content: "Stale" }]);
+      batch.cancel();
+      vi.runAllTimers();
+      expect(apply).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+});
+
 describe("per-prompt activity", () => {
+  it("recognizes source metadata without requiring a wire kind that breaks older clients", () => {
+    const call = ActivitySchema.parse({
+      call_id: "source1", name: "workiq_source_search___Email", kind: "tool", skill: null,
+      source: "Email", parent_call_id: "parent", status: "completed",
+      started_at: "2026-10-15T10:00:00Z", duration_ms: 100, timing_source: "runtime",
+    });
+    expect(call.kind).toBe("search");
+    expect(call.source).toBe("Email");
+  });
+
   it("formats runtime execution time and does not trust legacy arrival-based durations", () => {
     const call = ActivitySchema.parse({
       call_id: "call1", name: "workiq___ask", kind: "tool", skill: null, status: "completed",

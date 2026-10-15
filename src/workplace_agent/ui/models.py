@@ -44,10 +44,19 @@ class ToolActivity(BaseModel):
     name: str
     kind: Literal["tool", "skill"] = "tool"
     skill: str | None = None
+    source: Literal["Email", "OneDriveAndSharePoint"] | None = None
+    parent_call_id: str | None = None
     status: Literal["running", "completed", "failed", "cancelled"] = "running"
     started_at: str
     duration_ms: int | None = None
     timing_source: Literal["runtime"] | None = None
+
+
+class RunLatency(BaseModel):
+    preparation_ms: int | None = Field(default=None, ge=0)
+    first_event_ms: int | None = Field(default=None, ge=0)
+    first_text_ms: int | None = Field(default=None, ge=0)
+    response_ms: int | None = Field(default=None, ge=0)
 
 
 class RunRecord(BaseModel):
@@ -59,6 +68,10 @@ class RunRecord(BaseModel):
     response_id: str | None = None
     assistant_message_ids: list[str] = Field(default_factory=list)
     activity: list[ToolActivity] = Field(default_factory=list)
+    stage: Literal[
+        "connecting", "planning", "loading_skill", "searching", "running_tool", "answering"
+    ] = "connecting"
+    latency: RunLatency = Field(default_factory=RunLatency)
 
 
 class RenameSession(BaseModel):

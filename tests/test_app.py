@@ -1,20 +1,24 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from agent_framework import (
+    AgentSession,
     BaseChatClient,
     ChatMiddlewareLayer,
     ChatResponse,
     ChatResponseUpdate,
     Content,
     FunctionInvocationLayer,
+    FunctionTool,
     InMemoryHistoryProvider,
     ResponseStream,
     SessionContext,
     SkillsProvider,
 )
 from agent_framework.exceptions import ToolExecutionException
+from openai.types.responses import Response
 
 from workplace_agent import app
 from workplace_agent.execution import TIMING_KEY, unwrap_tool_output
@@ -133,8 +137,9 @@ async def test_factory_selects_loaded_cosmos_history_and_local_memory(
     await build.call_args.kwargs["client"].__aexit__(None, None, None)
 
 
-async def test_factory_exposes_packaged_file_skill_with_only_local_read_operations_approved(
-    factory, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("skill_name", ["document-finder", "meeting-prep"])
+async def test_factory_exposes_packaged_skills_with_only_local_read_operations_approved(
+    factory, monkeypatch: pytest.MonkeyPatch, skill_name: str,
 ) -> None:
     build = MagicMock(wraps=app.create_harness_agent)
     monkeypatch.setattr(app, "create_harness_agent", build)
@@ -144,10 +149,15 @@ async def test_factory_exposes_packaged_file_skill_with_only_local_read_operatio
         context = SessionContext(input_messages=[])
         await provider.before_run(agent=agent, session=agent.create_session(), context=context, state={})
         load = next(tool for tool in context.tools if tool.name == "load_skill")
-        instructions = await load.invoke(arguments={"skill_name": "document-finder"}, skip_parsing=True)
-        assert "PowerPoint" in instructions
-        assert "Spreadsheet" in instructions
-        assert "Audio/video" in instructions
+        instructions = await load.invoke(arguments={"skill_name": skill_name}, skip_parsing=True)
+        if skill_name == "document-finder":
+            assert "PowerPoint" in instructions
+            assert "Spreadsheet" in instructions
+            assert "Audio/video" in instructions
+        else:
+            assert "Meetings" in instructions
+            assert "Email" in instructions and "OneDriveAndSharePoint" in instructions
+            assert "Opening talk track" in instructions
         assert "inspect_document" not in instructions
         rules = build.call_args.kwargs["auto_approval_rules"]
         assert any(rule(Content.from_function_call("call1", "load_skill")) for rule in rules)
@@ -159,6 +169,53 @@ async def test_factory_exposes_packaged_file_skill_with_only_local_read_operatio
         await build.call_args.kwargs["client"].__aexit__(None, None, None)
 
 
+async def test_factory_reuses_ask_context_through_real_tool_invocation_across_requests(
+    factory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SyntheticClient(FunctionInvocationLayer, ChatMiddlewareLayer, BaseChatClient):
+        def __init__(self, **kwargs):
+            super().__init__()
+            self.project_client = MagicMock(close=AsyncMock())
+            self.client = MagicMock(close=AsyncMock())
+            self.calls = 0
+
+        def _inner_get_response(self, *, messages, stream, options, **kwargs):
+            self.calls += 1
+            first = self.calls == 1
+
+            async def updates():
+                yield ChatResponseUpdate(
+                    role="assistant", finish_reason="tool_calls" if first else "stop",
+                    contents=[
+                        Content.from_function_call("ask1", "workiq___ask", arguments={
+                            "question": "Synthetic question", "conversationId": "untrusted-id",
+                        }) if first else Content.from_text("Ready"),
+                    ],
+                )
+
+            return ResponseStream(updates(), finalizer=ChatResponse.from_updates)
+
+    calls = []
+
+    async def ask(question: str, conversationId: str | None = None, agentId: str | None = None) -> str:
+        calls.append(conversationId)
+        return json.dumps({"response": "Synthetic answer", "conversationId": "runtime-thread"})
+
+    factory.config.is_hosted = False
+    monkeypatch.setattr(app, "FoundryChatClient", SyntheticClient)
+    session = AgentSession()
+    for _ in range(2):
+        agent = await app.create_agent()
+        agent.default_options["tools"].append(
+            FunctionTool(name="workiq___ask", func=ask, approval_mode="never_require"),
+        )
+        async with agent:
+            async for _ in agent.run("Synthetic Ask continuity check.", session=session, stream=True):
+                pass
+        session = AgentSession.from_dict(json.loads(json.dumps(session.to_dict())))
+    assert calls == [None, "runtime-thread"]
+
+
 async def test_factory_streams_timing_outside_lazy_approval_without_changing_model_or_history(
     factory, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -168,9 +225,11 @@ async def test_factory_streams_timing_outside_lazy_approval_without_changing_mod
             self.project_client = MagicMock(close=AsyncMock())
             self.client = MagicMock(close=AsyncMock())
             self.requests = []
+            self.options = []
 
         def _inner_get_response(self, *, messages, stream, options, **kwargs):
             self.requests.append(list(messages))
+            self.options.append(dict(options))
             first = len(self.requests) == 1
 
             async def updates():
@@ -205,12 +264,41 @@ async def test_factory_streams_timing_outside_lazy_approval_without_changing_mod
             for message in final.messages for content in message.contents if content.type == "function_result"
         )
         assert isinstance(agent.client, SyntheticClient)
+        assert all(options["reasoning"] == {"effort": "low"} for options in agent.client.options)
         assert all(
             TIMING_KEY not in str(content.result)
             for request in agent.client.requests for message in request for content in message.contents
             if content.type == "function_result"
         )
         assert TIMING_KEY not in str(session.state)
+
+
+async def test_factory_sends_low_reasoning_to_foundry_without_changing_model_or_storage(
+    factory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory.config.is_hosted = False
+    agent = await app.create_agent()
+    response = Response.model_validate({
+        "id": "resp_test", "object": "response", "created_at": 1,
+        "model": "gpt-5.6-luna", "status": "completed",
+        "parallel_tool_calls": True, "tool_choice": "auto", "tools": [],
+        "output": [{
+            "id": "msg_test", "type": "message", "role": "assistant", "status": "completed",
+            "content": [{"type": "output_text", "text": "Ready", "annotations": []}],
+        }],
+    })
+    complete = AsyncMock(return_value=MagicMock(parse=MagicMock(return_value=response), headers={}))
+    assert isinstance(agent.client, app.FoundryChatClient)
+    monkeypatch.setattr(agent.client.client.responses.with_raw_response, "create", complete)
+    async with agent:
+        result = await agent.run("Reply Ready.", session=agent.create_session())
+    assert result.text == "Ready"
+    complete.assert_awaited_once()
+    request = complete.call_args.kwargs
+    assert request["reasoning"] == {"effort": "low"}
+    assert request["model"] == "gpt-5.6-luna"
+    assert request["store"] is False
+    assert any(tool.get("name") == "load_skill" for tool in request["tools"])
 
 
 def test_responses_server_is_not_an_anonymous_local_workiq_gateway(

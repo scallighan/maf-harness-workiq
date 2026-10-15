@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import AsyncExitStack, aclosing, asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -11,7 +13,14 @@ from uuid import UUID
 
 import httpx
 import uvicorn
-from ag_ui.core import CustomEvent, RunAgentInput, RunErrorEvent, RunFinishedEvent, RunStartedEvent
+from ag_ui.core import (
+    CustomEvent,
+    RunAgentInput,
+    RunErrorEvent,
+    RunFinishedEvent,
+    RunStartedEvent,
+    TextMessageContentEvent,
+)
 from ag_ui.encoder import EventEncoder
 from azure.core.exceptions import ClientAuthenticationError, ServiceRequestError
 from azure.cosmos.aio import CosmosClient
@@ -26,17 +35,25 @@ from .config import UIConfig
 from .events import ResponseEvents
 from .foundry import FoundryGateway, preview_reference
 from .models import PreviewRequest, RenameSession, RunRecord
-from .store import SessionStore, now, public_session, session_id
+from .store import RunCheckpointer, SessionStore, now, public_session, session_id
 
 logger = logging.getLogger(__name__)
 bearer = HTTPBearer(auto_error=False)
 
-async def with_heartbeats(source: AsyncGenerator[dict], interval: float = 15) -> AsyncGenerator[dict | None]:
+async def with_heartbeats(
+    source: AsyncGenerator[dict], interval: float = 15, *, watch: asyncio.Task[None] | None = None,
+) -> AsyncGenerator[dict | None]:
     async with aclosing(source):
         pending = asyncio.create_task(anext(source))
         try:
             while True:
-                done, _ = await asyncio.wait({pending}, timeout=interval)
+                done, _ = await asyncio.wait(
+                    {pending, watch} if watch else {pending}, timeout=interval,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if watch is not None and watch in done:
+                    watch.result()
+                    raise RuntimeError("The run checkpoint writer stopped during streaming.")
                 if not done:
                     yield None
                     continue
@@ -136,7 +153,6 @@ def create_app(config: UIConfig | None = None, services: Services | None = None)
         auth_bridge = request.url.path == "/auth.html"
         frame_ancestors = "'self'" if auth_bridge else "'none'"
         response.headers.update({
-            "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
             "Referrer-Policy": "no-referrer",
             "Content-Security-Policy": (
@@ -152,6 +168,7 @@ def create_app(config: UIConfig | None = None, services: Services | None = None)
                 "https://*.office.com https://*.onedrive.com https://onedrive.live.com"
             ),
         })
+        response.headers.setdefault("Cache-Control", "no-store")
         if not auth_bridge:
             response.headers["Cross-Origin-Opener-Policy"] = "same-origin-allow-popups"
         return response
@@ -199,12 +216,19 @@ def create_app(config: UIConfig | None = None, services: Services | None = None)
         owner = principal.owner(settings)
         document = await current.store.get(owner, identifier)
         token = await current.tokens.delegated(principal, "https://ai.azure.com")
-        messages = await current.foundry.messages(
+        messages = asyncio.create_task(current.foundry.messages(
             token, document["conversation_id"], legacy=document.get("conversation_scope") != "hosted",
-        )
+        ))
+        runs = asyncio.create_task(current.store.runs(owner, identifier))
+        try:
+            await asyncio.gather(messages, runs)
+        finally:
+            for task in (messages, runs):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(messages, runs, return_exceptions=True)
         return {
-            "session": public_session(document), "messages": messages,
-            "runs": await current.store.runs(owner, identifier),
+            "session": public_session(document), "messages": messages.result(), "runs": runs.result(),
         }
 
     @app.patch("/api/sessions/{identifier}")
@@ -265,6 +289,7 @@ def create_app(config: UIConfig | None = None, services: Services | None = None)
     async def chat(
         body: RunAgentInput, request: Request, principal: SignedInUser,
     ) -> StreamingResponse:
+        started = time.perf_counter_ns()
         current: Services = request.app.state.services
         identifier = session_id(body.thread_id)
         try:
@@ -290,10 +315,12 @@ def create_app(config: UIConfig | None = None, services: Services | None = None)
             id=run_id, session_id=identifier, prompt_preview=prompt.strip()[:160], started_at=now(),
         )
         document = await current.store.claim(owner, record)
+        record.latency.preparation_ms = (time.perf_counter_ns() - started) // 1_000_000
         encoder = EventEncoder(accept="text/event-stream")
 
         async def events() -> AsyncIterator[str]:
             adapter = ResponseEvents(record, settings.project_endpoint)
+            checkpoints = RunCheckpointer(current.store, owner)
             released = False
             try:
                 yield encoder.encode(RunStartedEvent(thread_id=identifier, run_id=run_id))
@@ -301,19 +328,28 @@ def create_app(config: UIConfig | None = None, services: Services | None = None)
                 async with asyncio.timeout(540):
                     async for raw in with_heartbeats(
                         current.foundry.stream(token, document["conversation_id"], prompt),
+                        watch=checkpoints.task,
                     ):
                         if raw is None:
                             yield ": keep-alive\n\n"
                             continue
+                        elapsed = (time.perf_counter_ns() - started) // 1_000_000
+                        if record.latency.first_event_ms is None:
+                            record.latency.first_event_ms = elapsed
                         for event in adapter.consume(raw):
+                            if record.latency.first_text_ms is None and isinstance(
+                                event, TextMessageContentEvent,
+                            ):
+                                record.latency.first_text_ms = elapsed
                             if isinstance(event, CustomEvent) and event.name == "workiq.activity":
-                                await current.store.save_run(owner, record)
+                                checkpoints.submit(record)
                             yield encoder.encode(event)
                 if not adapter.terminal:
                     raise HTTPException(
                         status_code=502, detail="The hosted agent stream ended without a result.",
                     )
-                await current.store.save_run(owner, record)
+                record.latency.response_ms = (time.perf_counter_ns() - started) // 1_000_000
+                await checkpoints.finish(record)
                 await current.store.release(owner, record)
                 released = True
                 yield encoder.encode(adapter.activity_event())
@@ -336,9 +372,20 @@ def create_app(config: UIConfig | None = None, services: Services | None = None)
                 yield encoder.encode(adapter.activity_event())
                 yield encoder.encode(RunErrorEvent(message=str(detail), code="hosted_request_failed"))
             finally:
+                if not released and record.status not in ("failed", "cancelled"):
+                    adapter.interrupt(failed=True)
+                await checkpoints.cancel()
                 if not released:
                     await asyncio.shield(current.store.save_run(owner, record))
                     await asyncio.shield(current.store.release(owner, record))
+                logger.info(
+                    "UI run finished: status=%s preparation_ms=%s first_event_ms=%s first_text_ms=%s "
+                    "response_ms=%s elapsed_ms=%d checkpoint_count=%d checkpoint_ms=%d",
+                    record.status, record.latency.preparation_ms, record.latency.first_event_ms,
+                    record.latency.first_text_ms, record.latency.response_ms,
+                    (time.perf_counter_ns() - started) // 1_000_000,
+                    checkpoints.write_count, checkpoints.write_ms,
+                )
 
         return StreamingResponse(
             events(), media_type="text/event-stream",
@@ -354,7 +401,13 @@ def create_app(config: UIConfig | None = None, services: Services | None = None)
         if not candidate.is_relative_to(root):
             raise HTTPException(status_code=404, detail="File not found.")
         if candidate.is_file():
-            return FileResponse(candidate)
+            cacheable = (
+                candidate.parent == root / "assets"
+                and re.fullmatch(r".+-[A-Za-z0-9_-]{8,}\.(?:js|css)", candidate.name)
+            )
+            return FileResponse(candidate, headers={
+                "Cache-Control": "public, max-age=31536000, immutable" if cacheable else "no-store",
+            })
         index = root / "index.html"
         if not index.is_file():
             raise HTTPException(status_code=503, detail="The UI assets have not been built.")
@@ -365,6 +418,7 @@ def create_app(config: UIConfig | None = None, services: Services | None = None)
 
 def main() -> None:
     logging.basicConfig(level=logging.WARNING)
+    logger.setLevel(logging.INFO)
     uvicorn.run(create_app(), host="0.0.0.0", port=8080, access_log=False)
 
 

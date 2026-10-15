@@ -1,6 +1,6 @@
 import { HttpAgent, type AgentSubscriber } from "@ag-ui/client";
 import { BrowserAuthError, type AccountInfo } from "@azure/msal-browser";
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { z } from "zod";
@@ -15,12 +15,16 @@ import {
   RunSchema,
   SessionSchema,
   ToolPayloadSchema,
+  MessageBatcher,
   displayText,
+  durationLabel,
   errorMessage,
   locationLabel,
   mergeRun,
+  mergeStreamMessages,
   protocolMessages,
   toolDuration,
+  runProgressLabel,
   type Consent,
   type Conversation,
   type FileReference,
@@ -49,7 +53,7 @@ function Icon({ name }: { name: IconName }) {
     strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={paths[name]} /></svg>;
 }
 
-export function MarkdownAnswer({ content }: { content: string }) {
+export const MarkdownAnswer = memo(function MarkdownAnswer({ content }: { content: string }) {
   return <Markdown skipHtml remarkPlugins={[remarkGfm]} components={{
     a: ({ children, href }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
     img: ({ alt }) => <span>[Image omitted: {alt ?? "source image"}]</span>,
@@ -57,7 +61,7 @@ export function MarkdownAnswer({ content }: { content: string }) {
       <table>{children}</table>
     </div>,
   }}>{displayText(content)}</Markdown>;
-}
+});
 
 function ToolDetails({ run, callId, load }: { run: Run; callId: string; load: LoadToolDetails }) {
   const [open, setOpen] = useState(false);
@@ -96,11 +100,11 @@ function ToolDetails({ run, callId, load }: { run: Run; callId: string; load: Lo
   </details>;
 }
 
-export function Activity({ run, loadDetails }: { run: Run; loadDetails: LoadToolDetails }) {
+export const Activity = memo(function Activity({ run, loadDetails }: { run: Run; loadDetails: LoadToolDetails }) {
   const labels = { running: "Running", completed: "Returned", failed: "Error", cancelled: "Interrupted" };
   const active = run.status === "running";
   const skillCount = run.activity.filter((call) => call.kind === "skill").length;
-  const toolCount = run.activity.length - skillCount;
+  const toolCount = run.activity.filter((call) => call.kind === "tool").length;
   return <details className={`activity ${active ? "is-running" : ""}`} open={active}>
     <summary>
       {active ? <span className="spinner" aria-hidden="true" /> : <Icon name="activity" />}
@@ -111,6 +115,13 @@ export function Activity({ run, loadDetails }: { run: Run; loadDetails: LoadTool
     </summary>
     <div className="activity-body">
       <div className="activity-prompt">{run.prompt_preview}</div>
+      {active && run.stage && <p className="waiting-for-agent" role="status">{runProgressLabel(run)}</p>}
+      {run.latency && <p className="activity-note">
+        {run.latency.preparation_ms !== null && <>Preparation: {durationLabel(run.latency.preparation_ms)}. </>}
+        {run.latency.first_event_ms !== null && <>First event: {durationLabel(run.latency.first_event_ms)}. </>}
+        {run.latency.first_text_ms !== null && <>First text: {durationLabel(run.latency.first_text_ms)}. </>}
+        {run.latency.response_ms !== null && <>Response ready: {durationLabel(run.latency.response_ms)}. </>}
+      </p>}
       {run.activity.length === 0
         ? <p className={active ? "waiting-for-agent" : undefined}>{active
           ? "Waiting for the hosted agent. Tool calls will appear as they are reported."
@@ -118,7 +129,9 @@ export function Activity({ run, loadDetails }: { run: Run; loadDetails: LoadTool
         : run.activity.map((call) => <div className="activity-entry" key={call.call_id}>
           <div className="activity-call">
             <span className={`status-dot ${call.status}`} />
-            <div><code>{call.name.replace("___", " / ")}</code>
+            <div><code>{call.kind === "search"
+              ? `Source search: ${call.source === "Email" ? "Email" : "OneDrive / SharePoint"}`
+              : call.name.replace("___", " / ")}</code>
               {call.kind === "skill" && <small>Skill: {call.skill ?? "name not reported"}</small>}
             </div>
             <span>{call.kind === "skill" && call.name === "load_skill" && call.status === "completed"
@@ -129,13 +142,16 @@ export function Activity({ run, loadDetails }: { run: Run; loadDetails: LoadTool
               {toolDuration(call)}
             </small>
           </div>
-          <ToolDetails run={run} callId={call.call_id} load={loadDetails} />
+          {call.kind !== "search" && <ToolDetails run={run} callId={call.call_id} load={loadDetails} />}
         </div>)}
       <p className="activity-note">Actual hosted-agent calls only. Private reasoning and Work IQ's internal execution are not exposed.</p>
+      {run.activity.some((call) => call.kind === "search") && <p className="activity-note">
+        Source search entries show the parent retrieval&apos;s concurrent SDK requests, not additional model tool calls.
+      </p>}
       {skillCount > 0 && <p className="activity-note">A successful skill load confirms its instructions were retrieved, not that every rule was followed or every source location verified.</p>}
     </div>
   </details>;
-}
+});
 
 function PreviewFrame({ preview }: { preview: Preview }) {
   const frameName = useRef(`preview-${crypto.randomUUID()}`).current;
@@ -182,7 +198,8 @@ export function App() {
   const pending = useRef(new Map<string, string>());
   const selection = useRef(0);
   const previewAbort = useRef<AbortController | null>(null);
-  const bottom = useRef<HTMLDivElement>(null);
+  const messagesContainer = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
 
   useEffect(() => {
     let alive = true;
@@ -245,12 +262,20 @@ export function App() {
     return () => { alive = false; };
   }, [account, signIn]);
 
-  useEffect(() => { bottom.current?.scrollIntoView({ behavior: "smooth" }); }, [conversation?.messages]);
+  useEffect(() => {
+    if (!stickToBottom.current) return;
+    const frame = requestAnimationFrame(() => {
+      const container = messagesContainer.current;
+      if (container && stickToBottom.current) container.scrollTop = container.scrollHeight;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [conversation?.messages, conversation?.runs]);
 
   function updateConversation(identifier: string, update: (value: Conversation) => Conversation) {
     const current = cache.current.get(identifier);
     if (!current) return;
     const next = update(current);
+    if (next === current) return;
     cache.current.set(identifier, next);
     if (selectedRef.current === identifier) setConversation(next);
   }
@@ -259,6 +284,7 @@ export function App() {
     const sequence = ++selection.current;
     const identity = accountRef.current;
     selectedRef.current = session.id;
+    stickToBottom.current = true;
     setSelected(session.id);
     setConsent(consents.current.get(session.id) ?? null);
     setError(null);
@@ -343,9 +369,13 @@ export function App() {
       || agents.current.has(identifier) || pending.current.has(identifier)
     ) return;
     pending.current.set(identifier, identity);
+    const submitted = performance.now();
+    let receivedEvent = false;
+    let receivedText = false;
     setRunning(new Set([...agents.current.keys(), ...pending.current.keys()]));
     setError(null);
     let agent: HttpAgent | undefined;
+    let messages: MessageBatcher | undefined;
     try {
       const accessToken = await token();
       if (identity !== accountRef.current) return;
@@ -353,11 +383,24 @@ export function App() {
         id: crypto.randomUUID(), role: "user", content: text.trim(), references: [],
       });
       const initialMessages = [...current.messages, user];
+      stickToBottom.current = true;
       updateConversation(identifier, (value) => ({ ...value, messages: initialMessages }));
       agent = new HttpAgent({
         url: "/api/chat", threadId: identifier, headers: { Authorization: `Bearer ${accessToken}` },
         initialMessages: protocolMessages(initialMessages), debug: false,
         fetch: async (url, options) => checkedResponse(await fetch(url, options)),
+      });
+      messages = new MessageBatcher((incoming) => {
+        if (identity !== accountRef.current) return;
+        updateConversation(identifier, (value) => {
+          const next = mergeStreamMessages(value.messages, incoming);
+          return next === value.messages ? value : { ...value, messages: next };
+        });
+      }, (failure) => {
+        if (identity === accountRef.current) {
+          setError(errorMessage(failure));
+          agent?.abortRun();
+        }
       });
       agents.current.set(identifier, agent);
       pending.current.delete(identifier);
@@ -367,19 +410,25 @@ export function App() {
         setDraft("");
         setConsent(null);
       }
+      const messageBuffer = messages;
       const subscriber: AgentSubscriber = {
+        onRunStartedEvent() {
+          if (identity !== accountRef.current) return;
+          if (!receivedEvent) {
+            receivedEvent = true;
+            performance.measure("workiq:browser:first-event", { start: submitted });
+          }
+        },
+        onTextMessageContentEvent() {
+          if (identity !== accountRef.current) return;
+          if (!receivedText) {
+            receivedText = true;
+            performance.measure("workiq:browser:first-text-event", { start: submitted });
+          }
+        },
         onMessagesChanged({ messages }) {
           if (identity !== accountRef.current) return;
-          updateConversation(identifier, (value) => ({
-            ...value,
-            messages: messages.flatMap((message) => {
-              if ((message.role !== "user" && message.role !== "assistant") || typeof message.content !== "string") {
-                return [];
-              }
-              const prior = value.messages.find((entry) => entry.id === message.id);
-              return [ChatMessageSchema.parse({ ...message, references: prior?.references ?? [] })];
-            }),
-          }));
+          messageBuffer.push(messages);
         },
         onCustomEvent({ event }) {
           if (identity !== accountRef.current) return;
@@ -388,6 +437,7 @@ export function App() {
             if (run.session_id !== identifier) throw new Error("Mismatched session activity.");
             updateConversation(identifier, (value) => ({ ...value, runs: mergeRun(value.runs, run) }));
           } else if (event.name === "workiq.references") {
+            messageBuffer.flush();
             const value = ReferencesEventSchema.parse(event.value);
             updateConversation(identifier, (chat) => ({
               ...chat,
@@ -408,6 +458,10 @@ export function App() {
     } catch (failure) {
       if (selectedRef.current === identifier && identity === accountRef.current) setError(errorMessage(failure));
     } finally {
+      performance.measure("workiq:browser:run-ended", { start: submitted });
+      try { messages?.flush(); }
+      catch (failure) { if (identity === accountRef.current) setError(errorMessage(failure)); }
+      messages?.cancel();
       if (agents.current.get(identifier) === agent) agents.current.delete(identifier);
       if (pending.current.get(identifier) === identity) pending.current.delete(identifier);
       setRunning(new Set([...agents.current.keys(), ...pending.current.keys()]));
@@ -493,8 +547,7 @@ export function App() {
   }
 
   const isRunning = selected !== null && running.has(selected);
-  const activeCall = conversation?.runs.filter((run) => run.status === "running").at(-1)
-    ?.activity.filter((call) => call.status === "running").at(-1);
+  const activeRun = conversation?.runs.filter((run) => run.status === "running").at(-1);
   const loadToolDetails = useCallback(async (run: Run, callId: string, signal: AbortSignal) => {
     if (!signIn || !account) throw new Error("Sign in to view tool details.");
     const identity = accountRef.current;
@@ -563,7 +616,11 @@ export function App() {
         <p>Authorize as your Microsoft 365 account, then retry your message.</p>
         <a href={consent.url} target="_blank" rel="noopener noreferrer">Authorize Work IQ <Icon name="external" /></a>
       </div>}
-      <div className="messages" aria-live="polite" aria-busy={loading || isRunning}>
+      <div className="messages" ref={messagesContainer} aria-live="polite" aria-busy={loading || isRunning}
+        onScroll={(event) => {
+          const container = event.currentTarget;
+          stickToBottom.current = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+        }}>
         {catalogBusy && <div className="loading" role="status"><span className="spinner" aria-hidden="true" /> Preparing your workspace...</div>}
         {loading && <div className="loading">Loading conversation...</div>}
         {!loading && messages.length === 0 && <div className="welcome">
@@ -598,21 +655,24 @@ export function App() {
             .map((run) => <Activity key={run.id} run={run} loadDetails={loadToolDetails} />)}
         </article>)}
         {unattached.map((run) => <Activity key={run.id} run={run} loadDetails={loadToolDetails} />)}
-        <div ref={bottom} />
       </div>
       <footer className="composer-area">
         {isRunning && <div className="request-progress" role="status">
           <span className="spinner" aria-hidden="true" />
-          <div><strong>{activeCall ? `Running ${activeCall.name.replace("___", " / ")}` : "Request in progress"}</strong>
-            <span>Keep this session open, switch sessions, or stop streaming below.</span>
+          <div><strong>{activeRun ? runProgressLabel(activeRun) : "Submitting your request"}</strong>
+            <span>You can draft your next message, switch sessions, or stop streaming below.</span>
           </div>
         </div>}
         <form className="composer" onSubmit={submit}>
-          <textarea aria-label="Message" placeholder={selected ? "Ask about your work..." : "Create or select a session to start"}
-            value={draft} disabled={!selected || !account || isRunning} maxLength={20000} rows={2}
+          <textarea aria-label="Message" placeholder={isRunning ? "Draft your next message..." : selected
+            ? "Ask about your work..." : "Create or select a session to start"}
+            value={draft} disabled={!selected || !account} maxLength={20000} rows={2}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(draft); }
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                if (!isRunning) void send(draft);
+              }
             }} />
           {isRunning
             ? <button type="button" aria-label="Stop streaming" onClick={() => selected && agents.current.get(selected)?.abortRun()}><Icon name="stop" /></button>
