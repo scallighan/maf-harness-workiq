@@ -121,12 +121,14 @@ Configure interaction controls in your Terraform inputs:
 
 ```hcl
 workiq_mcp_allowed_tools    = ["ask", "fetch", "get_schema", "search_paths", "fetch_blob"]
-workiq_mcp_require_approval = "always"
+workiq_mcp_require_approval = "never"
 ```
 
 The default allowlist excludes create/update/delete/action tools. Use exact
-upstream names, not the toolbox-prefixed names. `always` requires confirmation
-for every allowed call; `never` permits those calls without a prompt. Apply the
+upstream names, not the toolbox-prefixed names. The default `never` permits calls
+without a per-call prompt. `always` publishes approval metadata, but the hosted
+Toolbox runtime does not currently enforce that metadata as a confirmation gate;
+do not rely on it for approval enforcement. Apply the
 Terraform configuration and run setup to publish changed controls.
 
 Run as the authorized tenant administrator:
@@ -215,15 +217,87 @@ Custom hosted configuration uses `AZURE_AI_PROJECT_ENDPOINT` and
 `TOOLBOX_ENDPOINT`; `FOUNDRY_*` and `AGENT_*` variables are reserved for platform
 injection. Foundry's own injected endpoint remains available to its SDK.
 
+## 5. Deploy the chat UI
+
+On the existing platform, load the same Terraform environment and run:
+
+```bash
+set -a; source terraform/.env; set +a
+./scripts/deploy_ui.sh
+```
+
+The script builds the UI/API container, pins its digest in git-ignored
+`terraform/ui.auto.tfvars`, and asks for Terraform confirmation. Run it with an
+administrator authorized to consent to the UI's delegated permissions. It grants
+consent to the dedicated browser/API applications, then checks `/readyz`.
+The UI URL is also available from `terraform output -raw ui_url`.
+
+The optional UI uses a VNet-injected Container Apps consumption environment with
+a dedicated Cosmos SQL private endpoint and private DNS. It reuses the existing
+registry, observability workspace and private Cosmos account; it does not enable
+Cosmos public access or key authentication. Its managed identity can access only
+the `uiSessions` container. `ui_min_replicas = 0` scales to zero when idle; use `1`
+if cold starts are undesirable.
+
+Sign in with an authorized Foundry/Microsoft 365 account. The API validates the
+browser's delegated token and exchanges it on behalf of that same user for
+Foundry and Graph access. A managed-identity federated credential authenticates
+the exchange without an application secret. Each user has a separate session
+catalog; Foundry stores conversation transcripts and Cosmos stores session
+metadata and per-prompt activity. Tenant admin consent does not grant Foundry
+project access or replace individual Work IQ OAuth authorization.
+Conversation creation, history and deletion use the hosted agent's OpenAI
+endpoint, the same scope as its Responses API. Empty sessions created with the
+earlier project-level endpoint are upgraded on their next prompt without changing
+their session IDs or activity records. Sessions with existing project-level
+history are retained and require a new session rather than silently discarding it.
+The browser application registers `/auth.html` as a dedicated same-origin MSAL
+redirect bridge for both popup sign-in and sign-out. If an abandoned popup leaves
+an `interaction_in_progress` error, close that window and use **Retry sign-in**;
+the UI never automatically overrides an active authentication interaction.
+
+The sidebar supports creating, selecting, renaming and deleting sessions. Signing
+in with an empty catalog automatically creates and selects the first session.
+Each prompt shows actual tool calls and explicitly reported skill invocations
+from the hosted stream, with a visible progress indicator before the first call.
+Expandable **Input / output** controls load the selected call from its stored
+Foundry response after the prompt finishes. Payloads remain in Foundry rather
+than being copied into Cosmos; credential fields and authentication/temporary
+URLs are redacted and large payloads are truncated. Private reasoning is excluded.
+Answers render GitHub-flavored Markdown, including tables; raw HTML and external
+image loading remain disabled.
+
+Source cards open a delegated Graph preview using drive/item IDs, or resolve
+SharePoint file URLs and `AllItems.aspx?id=...` library links to those IDs.
+The API application requires delegated `Files.Read` and `Sites.Read.All`; both
+are read-only and effective access remains limited to the signed-in user.
+Unsupported links retain **Open original** rather than guessing file identifiers
+or fetching arbitrary URLs. Page/slide positions are
+best-effort viewer hints and always marked **not verified**. Preview URLs are
+short-lived and are not stored in Cosmos.
+
+For local frontend development, add `http://localhost:5173/` to
+`ui_additional_redirect_uris`, apply, and use `npm run dev` in `ui/`.
+Vite proxies `/api` to `UI_API_PROXY` (default `http://127.0.0.1:8080`).
+The API requires the deployed Entra/Cosmos configuration and an attached managed
+identity; there is no local authentication bypass. Standard Container Apps HTTP
+ingress has a 240-second request limit; the bridge sends keep-alive comments but
+does not promise unlimited-duration prompts.
+
 ## Development
 
 ```bash
-uv run --extra dev python -m pytest -q
-uv run --extra dev ruff check .
-uv run --extra dev pyright
+uv sync --frozen --extra dev --extra ui
+uv run python -m pytest -q
+uv run ruff check .
+uv run pyright
+npm --prefix ui ci
+npm --prefix ui run build
+# Run frontend tests with Node 24+ (the container build uses Node 24).
+npm --prefix ui test
 terraform fmt -check -recursive terraform
 terraform -chdir=terraform validate
-bash -n scripts/deploy.sh scripts/local-test.sh
+bash -n scripts/deploy.sh scripts/deploy_ui.sh scripts/local-test.sh
 ```
 
 Offline tests cover the runtime's request-owned resources, local history and

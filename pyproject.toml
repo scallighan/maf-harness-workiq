@@ -27,11 +27,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<9", "pytest-asyncio>=1,<2", "ruff>=0.13,<1", "pyright>=1.1.400,<2"]
+ui = ["ag-ui-protocol>=0.1.14,<0.2"]
 
 [project.scripts]
 workplace-agent = "workplace_agent.app:main"
 workplace-demo = "workplace_agent.demo:main"
 workplace-auth = "workplace_agent.broker:main"
+workplace-ui = "workplace_agent.ui.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/workplace_agent"]

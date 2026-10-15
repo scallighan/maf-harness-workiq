@@ -29,6 +29,7 @@ def deployment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     scripts.mkdir()
     (tmp_path / "terraform").mkdir()
     shutil.copyfile(Path(__file__).parents[1] / "scripts/deploy.sh", scripts / "deploy.sh")
+    shutil.copyfile(Path(__file__).parents[1] / "scripts/deploy_ui.sh", scripts / "deploy_ui.sh")
     tools = tmp_path / "bin"
     tools.mkdir()
     mock = f"""#!{sys.executable}
@@ -46,10 +47,14 @@ elif name == "terraform" and args[1:3] == ["output", "-raw"]:
     print({{
         "foundry_project_endpoint": {PROJECT!r},
         "registry_name": "example",
+        "subscription_id": "subscription-id",
         "registry_login_server": "example.azurecr.io",
         "agent_name": "workplace-productivity",
         "agent_version": "4",
         "workiq_broker_url": "https://broker.example.com",
+        "ui_url": "https://ui.example.com",
+        "ui_api_client_id": "api-client-id",
+        "ui_browser_client_id": "browser-client-id",
     }}[args[3]])
 elif name == "az" and args[:3] == ["acr", "repository", "show"]:
     print("sha256:" + "a" * 64)
@@ -117,3 +122,27 @@ def test_failed_push_preserves_previous_release_inputs(
     assert result.returncode == 7
     assert release.read_text() == "previous release\n"
     assert "scripts/wait_for_agent.py" not in (deployment / "calls.log").read_text()
+
+
+def test_ui_deploy_pins_image_configures_consent_and_checks_private_storage(deployment: Path) -> None:
+    subprocess.run(["bash", str(deployment / "scripts/deploy_ui.sh")], check=True, capture_output=True)
+    release = (deployment / "terraform/ui.auto.tfvars").read_text().splitlines()
+    assert json.loads(release[0].split(" = ", 1)[1]) == IMAGE.replace("workplace-agent@", "workplace-ui@")
+    calls = (deployment / "calls.log").read_text()
+    assert "docker build --platform linux/amd64 -f ui/Dockerfile" in calls
+    assert calls.index("docker push") < calls.index("terraform -chdir=terraform apply\n")
+    assert "uv run python -m scripts.setup_ui" in calls
+    assert "https://ui.example.com/readyz" in calls
+    assert "-auto-approve" not in calls
+
+
+def test_failed_ui_push_preserves_previous_release(
+    deployment: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FAIL_PUSH", "1")
+    release = deployment / "terraform/ui.auto.tfvars"
+    release.write_text("previous UI release\n")
+    result = subprocess.run(["bash", str(deployment / "scripts/deploy_ui.sh")], capture_output=True)
+    assert result.returncode == 7
+    assert release.read_text() == "previous UI release\n"
+    assert "terraform -chdir=terraform apply\n" not in (deployment / "calls.log").read_text()

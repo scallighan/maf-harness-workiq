@@ -52,4 +52,7 @@ __pycache__/
 !.env.example
 *.tfplan
 dist/
+node_modules/
+ui/coverage/
+ui/*.tsbuildinfo
 *.egg-info/

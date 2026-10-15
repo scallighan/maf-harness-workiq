@@ -96,11 +96,47 @@ variable "workiq_mcp_allowed_tools" {
 variable "workiq_mcp_require_approval" {
   type        = string
   description = "Whether the agent must obtain confirmation before calling the allowed MCP tools."
-  default     = "always"
+  default     = "never"
 
   validation {
     condition     = contains(["always", "never"], var.workiq_mcp_require_approval)
     error_message = "Use always or never for MCP tool approval."
+  }
+}
+
+variable "ui_image_uri" {
+  type        = string
+  description = "Immutable UI image URI; blank leaves the optional Azure chat UI unprovisioned."
+  default     = ""
+
+  validation {
+    condition     = var.ui_image_uri == "" || can(regex("^[a-z0-9.-]+\\.azurecr\\.io/[a-z0-9/._-]+@sha256:[0-9a-f]{64}$", var.ui_image_uri))
+    error_message = "Use an immutable ACR image URI ending in @sha256:<64 hex characters>."
+  }
+}
+
+variable "ui_min_replicas" {
+  type        = number
+  description = "Minimum Container Apps UI replicas; zero scales to zero when idle."
+  default     = 0
+
+  validation {
+    condition     = var.ui_min_replicas >= 0 && var.ui_min_replicas <= 2 && floor(var.ui_min_replicas) == var.ui_min_replicas
+    error_message = "Use an integer from zero to two."
+  }
+}
+
+variable "ui_additional_redirect_uris" {
+  type        = list(string)
+  description = "Optional additional SPA redirects, for example http://localhost:5173/ for local frontend development."
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for uri in var.ui_additional_redirect_uris :
+      can(regex("^https://[^/?#]+/[^?#]*$", uri)) || can(regex("^http://localhost:[0-9]+/[^?#]*$", uri))
+    ])
+    error_message = "Use HTTPS redirects, or localhost HTTP redirects with an explicit port."
   }
 }
 

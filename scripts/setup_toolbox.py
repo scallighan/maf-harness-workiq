@@ -28,6 +28,60 @@ def terraform_output(name: str) -> str:
     ).strip()
 
 
+def grant_delegated_consent(client_id: str, credential: AzureCliCredential, client: httpx.Client) -> None:
+    headers = {"Authorization": f"Bearer {credential.get_token('https://graph.microsoft.com/.default').token}"}
+    base = "https://graph.microsoft.com/v1.0"
+
+    def get(path: str, parameters: dict) -> list[dict]:
+        response = client.get(f"{base}/{path}", headers=headers, params=parameters)
+        response.raise_for_status()
+        return response.json()["value"]
+
+    applications = get("applications", {
+        "$filter": f"appId eq '{client_id}'", "$select": "requiredResourceAccess",
+    })
+    callers = get("servicePrincipals", {"$filter": f"appId eq '{client_id}'", "$select": "id"})
+    if len(applications) != 1 or len(callers) != 1:
+        raise RuntimeError("The consent application's registration and service principal must exist.")
+    caller_id = callers[0]["id"]
+    for access in applications[0]["requiredResourceAccess"]:
+        if any(permission["type"] != "Scope" for permission in access["resourceAccess"]):
+            raise RuntimeError("This setup grants delegated permissions only.")
+        resources = get("servicePrincipals", {
+            "$filter": f"appId eq '{access['resourceAppId']}'",
+            "$select": "id,oauth2PermissionScopes",
+        })
+        if len(resources) != 1:
+            raise RuntimeError("The downstream delegated API service principal must exist.")
+        resource = resources[0]
+        names = {
+            scope["id"]: scope["value"] for scope in resource["oauth2PermissionScopes"]
+            if scope["isEnabled"]
+        }
+        requested = {names[permission["id"]] for permission in access["resourceAccess"]}
+        grants = get("oauth2PermissionGrants", {
+            "$filter": f"clientId eq '{caller_id}' and resourceId eq '{resource['id']}'",
+        })
+        existing = [grant for grant in grants if grant["consentType"] == "AllPrincipals"]
+        if len(existing) > 1:
+            raise RuntimeError("Multiple tenant-wide permission grants require administrator review.")
+        if existing:
+            grant = existing[0]
+            current = set(grant["scope"].split())
+            if requested <= current:
+                continue
+            response = client.patch(
+                f"{base}/oauth2PermissionGrants/{grant['id']}", headers=headers,
+                json={"scope": " ".join(sorted(current | requested))},
+            )
+        else:
+            response = client.post(f"{base}/oauth2PermissionGrants", headers=headers, json={
+                "clientId": caller_id, "resourceId": resource["id"],
+                "consentType": "AllPrincipals", "scope": " ".join(sorted(requested)),
+            })
+        response.raise_for_status()
+
+
 @dataclass(frozen=True)
 class SetupConfig:
     project_endpoint: str
@@ -150,14 +204,12 @@ def main() -> None:
         require_approval=approval,
     )
     print("Granting the dedicated app's Work IQ delegated admin consent (tenant administrator required).")
-    subprocess.run(
-        ["az", "ad", "app", "permission", "admin-consent", "--id", config.client_id], check=True,
-    )
     with (
-        AzureCliCredential() as credential,
+        AzureCliCredential(tenant_id=config.tenant_id) as credential,
         httpx.Client(timeout=60, follow_redirects=False) as client,
         AIProjectClient(endpoint=config.project_endpoint, credential=credential) as project,
     ):
+        grant_delegated_consent(config.client_id, credential, client)
         redirect = ensure_connection(config, credential, client)
         configure_redirect(config, redirect, credential, client, ROOT / "terraform/toolbox.auto.tfvars")
         version = ensure_toolbox(config, project)

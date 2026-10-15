@@ -16,9 +16,12 @@ gh_repo         = "scallighan/maf-harness-workiq"
 # workiq_toolbox_name = "work-iq-toolbox"
 # workiq_mcp_connection_name = "work-iq-mcp"
 # workiq_mcp_allowed_tools = ["ask", "fetch", "get_schema", "search_paths", "fetch_blob"]
-# workiq_mcp_require_approval = "always"
+# workiq_mcp_require_approval = "never"
 # workiq_mcp_secret_version = "1" # Set/increment when creating or rotating a credential.
 # setup_toolbox.py persists Foundry's OAuth redirect URL in toolbox.auto.tfvars.
 
 # scripts/deploy.sh persists the immutable image in agent.auto.tfvars.
+# scripts/deploy_ui.sh persists the optional UI image in ui.auto.tfvars.
+# ui_min_replicas = 0
+# ui_additional_redirect_uris = ["http://localhost:5173/"]
 # OAuth secrets and access/refresh tokens never belong here.

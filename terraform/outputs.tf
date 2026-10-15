@@ -2,6 +2,11 @@ output "resource_group_name" {
   value = azurerm_resource_group.this.name
 }
 
+output "subscription_id" {
+  value     = var.subscription_id
+  sensitive = true
+}
+
 output "foundry_project_endpoint" {
   value = local.foundry_endpoint
 }
@@ -77,4 +82,20 @@ output "cosmos_endpoint" {
 
 output "agent_principal_id" {
   value = local.deploy_agent ? azapi_data_plane_resource.agent[0].output.instance_identity.principal_id : null
+}
+
+output "ui_url" {
+  value = local.ui_url
+}
+
+output "ui_api_client_id" {
+  value = local.deploy_ui ? azuread_application.ui_api[0].client_id : null
+}
+
+output "ui_browser_client_id" {
+  value = local.deploy_ui ? azuread_application.ui_browser[0].client_id : null
+}
+
+output "ui_app_name" {
+  value = local.deploy_ui ? azurerm_container_app.ui[0].name : null
 }

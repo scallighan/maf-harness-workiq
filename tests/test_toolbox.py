@@ -42,6 +42,45 @@ def credential() -> MagicMock:
     return MagicMock(get_token=MagicMock(return_value=MagicMock(token="azure-token")))
 
 
+@pytest.mark.parametrize("existing_scope", ["", "Existing.Scope", "Files.Read Existing.Scope"])
+def test_delegated_consent_preserves_existing_scopes_and_reuses_matching_grants(existing_scope: str) -> None:
+    writes = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.method != "GET":
+            writes.append(request)
+            return httpx.Response(204)
+        if request.url.path.endswith("/applications"):
+            return httpx.Response(200, json={"value": [{"requiredResourceAccess": [{
+                "resourceAppId": "resource", "resourceAccess": [{"id": "read-scope", "type": "Scope"}],
+            }]}]})
+        if request.url.path.endswith("/servicePrincipals"):
+            if "resource" in request.url.params["$filter"]:
+                value = {"id": "resource-sp", "oauth2PermissionScopes": [{
+                    "id": "read-scope", "value": "Files.Read", "isEnabled": True,
+                }]}
+            else:
+                value = {"id": "caller-sp"}
+            return httpx.Response(200, json={"value": [value]})
+        return httpx.Response(200, json={"value": [{
+            "id": "existing-grant", "consentType": "AllPrincipals", "scope": existing_scope,
+        }] if existing_scope else []})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        setup_toolbox.grant_delegated_consent("client", credential(), client)
+    if "Files.Read" in existing_scope:
+        assert writes == []
+    elif existing_scope:
+        assert writes[0].method == "PATCH"
+        assert json.loads(writes[0].content) == {"scope": "Existing.Scope Files.Read"}
+    else:
+        assert writes[0].method == "POST"
+        assert json.loads(writes[0].content) == {
+            "clientId": "caller-sp", "resourceId": "resource-sp",
+            "consentType": "AllPrincipals", "scope": "Files.Read",
+        }
+
+
 def test_setup_reads_terraform_connection_without_issuing_or_persisting_credentials(
     tmp_path: Path, capsys: pytest.CaptureFixture,
 ) -> None:

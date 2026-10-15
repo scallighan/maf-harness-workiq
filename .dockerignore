@@ -8,3 +8,8 @@ docs
 __pycache__
 .pytest_cache
 .ruff_cache
+node_modules
+ui/node_modules
+ui/dist
+ui/coverage
+*.tsbuildinfo

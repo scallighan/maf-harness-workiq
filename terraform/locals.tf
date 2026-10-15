@@ -10,6 +10,9 @@ locals {
   workiq_mcp_endpoint = "https://workiq.svc.cloud.microsoft/mcp"
 
   deploy_agent = var.agent_image_uri != ""
+  deploy_ui    = var.ui_image_uri != ""
+  ui_name      = "ui-${local.func_name}"
+  ui_url       = local.deploy_ui ? "https://${local.ui_name}.${azurerm_container_app_environment.ui[0].default_domain}" : null
 
   workiq_resource_app_id = "fdcc1f02-fc51-4226-8753-f668596af7f7"
   workiq_ask_scope_id    = "0b1715fd-f4bf-4c63-b16d-5be31f9847c2"
