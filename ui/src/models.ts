@@ -39,6 +39,7 @@ export const ActivitySchema = z.object({
   status: z.enum(["running", "completed", "failed", "cancelled"]),
   started_at: z.string(),
   duration_ms: z.number().nonnegative().nullable(),
+  timing_source: z.literal("runtime").nullable().default(null),
 });
 
 export const RunSchema = z.object({
@@ -95,6 +96,7 @@ export type FileReference = z.infer<typeof ReferenceSchema>;
 export type Session = z.infer<typeof SessionSchema>;
 export type Run = z.infer<typeof RunSchema>;
 export type ToolPayload = z.infer<typeof ToolPayloadSchema>;
+export type ToolActivity = z.infer<typeof ActivitySchema>;
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 export type Conversation = z.infer<typeof ConversationSchema>;
 export type Preview = z.infer<typeof PreviewSchema>;
@@ -119,6 +121,15 @@ export function locationLabel(reference: FileReference): string {
   if (reference.slide !== null) return `Reported slide ${reference.slide}`;
   if (reference.page !== null) return `Reported page ${reference.page}`;
   return "File reference";
+}
+
+export function toolDuration(call: ToolActivity): string {
+  if (call.timing_source !== "runtime" || call.duration_ms === null) {
+    return call.status === "running" ? "Timing pending" : "Timing unavailable";
+  }
+  if (call.duration_ms === 0) return "<1 ms";
+  if (call.duration_ms < 1000) return `${call.duration_ms} ms`;
+  return `${(call.duration_ms / 1000).toFixed(1)}s`;
 }
 
 export function errorMessage(error: unknown): string {

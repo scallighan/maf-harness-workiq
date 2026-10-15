@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ReferenceSchema, displayText, locationLabel, mergeRun, protocolMessages, type Run } from "./models";
+import { ActivitySchema, ReferenceSchema, displayText, locationLabel, mergeRun, protocolMessages, toolDuration, type Run } from "./models";
 
 describe("reference presentation", () => {
   it("keeps normal answer text and hides machine metadata, including unfinished streaming blocks", () => {
@@ -19,6 +19,19 @@ describe("reference presentation", () => {
 });
 
 describe("per-prompt activity", () => {
+  it("formats runtime execution time and does not trust legacy arrival-based durations", () => {
+    const call = ActivitySchema.parse({
+      call_id: "call1", name: "workiq___ask", kind: "tool", skill: null, status: "completed",
+      started_at: "2026-10-15T10:00:00Z", duration_ms: 35_020, timing_source: "runtime",
+    });
+    expect(toolDuration(call)).toBe("35.0s");
+    expect(toolDuration({ ...call, duration_ms: 2 })).toBe("2 ms");
+    expect(toolDuration({ ...call, duration_ms: 0 })).toBe("<1 ms");
+    expect(toolDuration({ ...call, timing_source: null })).toBe("Timing unavailable");
+    expect(toolDuration({ ...call, timing_source: null, duration_ms: 0 })).toBe("Timing unavailable");
+    expect(toolDuration({ ...call, timing_source: null, status: "running" })).toBe("Timing pending");
+  });
+
   it("updates a streaming run in place instead of duplicating its calls or replacing another prompt", () => {
     const first: Run = {
       id: "11111111-1111-4111-8111-111111111111",

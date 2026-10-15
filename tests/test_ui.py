@@ -19,6 +19,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from workplace_agent.execution import TIMING_KEY
 from workplace_agent.ui.auth import Authenticator, Principal
 from workplace_agent.ui.config import UIConfig
 from workplace_agent.ui.events import ResponseEvents
@@ -167,7 +168,7 @@ async def test_session_claim_serializes_prompts_and_preserves_activity(memory_st
         await memory_store.claim("alice", record.model_copy(update={"id": str(uuid4())}))
     assert error.value.status_code == 409
     adapter = ResponseEvents(record, "https://example.services.ai.azure.com/api/projects/workplace")
-    adapter.start_call({"call_id": "call_1", "id": "item_1", "name": "workiq___ask"}, observed=True)
+    adapter.start_call({"call_id": "call_1", "id": "item_1", "name": "workiq___ask"})
     adapter.finish_call({"call_id": "call_1", "output": '{"isError":false}'})
     record.status = "completed"
     await memory_store.save_run("alice", record)
@@ -267,6 +268,75 @@ def test_tool_result_error_is_not_reported_as_success_or_replayed() -> None:
     assert record.activity[0].status == "failed"
     assert adapter.completed_item(result) == []
     assert adapter.completed_item(item) == []
+
+
+@pytest.mark.parametrize("metadata_change", [
+    None, {"call_id": "other"}, {"name": "other"}, {"duration_ms": -1},
+])
+def test_batched_tool_calls_use_only_matching_runtime_execution_timing(metadata_change: dict | None) -> None:
+    record = RunRecord(id=str(uuid4()), session_id=str(uuid4()), prompt_preview="Hello", started_at=now())
+    adapter = ResponseEvents(record, "https://example.services.ai.azure.com/api/projects/workplace")
+    adapter.consume({
+        "type": "response.output_item.added",
+        "item": {"type": "function_call", "call_id": "call1", "name": "workiq___ask", "arguments": "{}"},
+    })
+    timing = {
+        "version": 1, "call_id": "call1", "name": "workiq___ask",
+        "started_at": "2026-10-15T10:00:00Z", "duration_ms": 35_020, "failed": False,
+        **(metadata_change or {}),
+    }
+    result = {
+        "type": "response.output_item.done", "item": {
+            "type": "function_call_output", "call_id": "call1",
+            "output": json.dumps({TIMING_KEY: timing, "output": '{"answer":"hello"}'}),
+        },
+    }
+    if metadata_change:
+        with pytest.raises(HTTPException) as error:
+            adapter.consume(result)
+        assert error.value.status_code == 502
+    else:
+        adapter.consume(result)
+        call = record.activity[0]
+        assert call.duration_ms == 35_020
+        assert call.timing_source == "runtime"
+        assert call.started_at == "2026-10-15T10:00:00+00:00"
+
+
+def test_untimed_calls_do_not_turn_stream_delivery_gaps_into_execution_durations() -> None:
+    record = RunRecord(id=str(uuid4()), session_id=str(uuid4()), prompt_preview="Hello", started_at=now())
+    adapter = ResponseEvents(record, "https://example.services.ai.azure.com/api/projects/workplace")
+    adapter.consume({
+        "type": "response.output_item.added",
+        "item": {"type": "function_call", "call_id": "call1", "name": "workiq___ask"},
+    })
+    adapter.completed_item({"type": "function_call_output", "call_id": "call1", "output": "{}"})
+    assert record.activity[0].duration_ms is None
+    assert record.activity[0].timing_source is None
+
+
+def test_failed_skill_load_is_not_reported_as_loaded_and_remote_lookalikes_are_not_skills() -> None:
+    record = RunRecord(
+        id=str(uuid4()), session_id=str(uuid4()), prompt_preview="Find a file", started_at=now(),
+    )
+    adapter = ResponseEvents(record, "https://example.services.ai.azure.com/api/projects/workplace")
+    adapter.completed_item({
+        "type": "function_call", "name": "load_skill", "call_id": "skill1",
+        "arguments": '{"skill_name":"missing-skill"}',
+    })
+    adapter.completed_item({
+        "type": "function_call_output", "call_id": "skill1",
+        "output": "Error: Skill 'missing-skill' not found.",
+    })
+    adapter.completed_item({
+        "type": "function_call", "name": "workiq___load_skill", "call_id": "remote1",
+        "arguments": '{"skill_name":"document-finder"}',
+    })
+    assert record.activity[0].kind == "skill"
+    assert record.activity[0].skill == "missing-skill"
+    assert record.activity[0].status == "failed"
+    assert record.activity[1].kind == "tool"
+    assert record.activity[1].skill is None
 
 
 def test_file_metadata_never_upgrades_reported_locations_to_verified_pages() -> None:
@@ -749,6 +819,31 @@ async def test_tool_payload_lookup_returns_only_the_requested_actual_call_not_pr
     assert json.loads(result["output"]) == {"answer": "hello"}
     assert "private reasoning" not in json.dumps(result)
     assert "other call" not in json.dumps(result)
+
+
+async def test_tool_payload_lookup_unwraps_runtime_metadata_before_redacting_actual_output(
+    config: UIConfig,
+) -> None:
+    record = RunRecord(
+        id=str(uuid4()), session_id=str(uuid4()), response_id="resp1", status="completed",
+        prompt_preview="Hello", started_at=now(),
+    )
+    payload = {"output": [
+        {"type": "function_call", "call_id": "call1", "name": "workiq___ask", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "call1", "output": json.dumps({
+            TIMING_KEY: {
+                "version": 1, "call_id": "call1", "name": "workiq___ask", "started_at": now(),
+                "duration_ms": 35_020, "failed": False,
+            },
+            "output": {"answer": "hello", "access_token": "private-token"},
+        })},
+    ]}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(
+        200, json=payload,
+    ))) as client:
+        result = await FoundryGateway(config, client).tool_details("delegated", record, "call1")
+    assert json.loads(result["output"]) == {"answer": "hello", "access_token": "[redacted]"}
+    assert TIMING_KEY not in result["output"]
 
 
 async def test_tool_payload_api_checks_user_session_run_and_call_before_any_upstream_access(

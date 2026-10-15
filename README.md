@@ -9,19 +9,43 @@ and a custom Work IQ MCP connection exposed through Foundry Toolbox:
 - A toolbox contains a generic `MCPToolboxTool`, not `WorkIQPreviewToolboxTool`.
 - Terraform inputs control which upstream tools are exposed and whether calls
   require explicit user approval.
-- The runtime uses the SDK's existing `FoundryToolbox` directly. No custom MCP
+- The runtime uses the SDK's existing `FoundryToolbox` transport. No custom MCP
   transport, standalone OAuth broker, shared user token or manual caller binding
   is used by this path.
 
-The model can call Work IQ's individual MCP tools for semantic questions,
+The model can call Work IQ's individual MCP tools for source-grounded retrieval, semantic questions,
 structured reads, schema discovery and document-byte retrieval under the
 authorizing user's permissions.
 The agent requests read-only research and must report access/search limitations.
 Tenant policy remains responsible for enforcing permitted Work IQ operations.
 
-**This path does not independently verify PDF page numbers.** Exposing
-`fetch_blob` alone does not provide page verification: the agent must say
-"page not verified" rather than inventing page evidence.
+The packaged `document-finder` skill is loaded through the harness's real
+`load_skill` tool on each file-research turn, including follow-ups. It covers all
+file types and automatically asks for native source locations: PDF pages,
+presentation slides, document sections/paragraphs, spreadsheet sheets/cells,
+text/code lines and audio/video timestamps. Missing locations trigger a targeted
+read-only follow-up before the answer, rather than requiring another user prompt.
+Discovery prefers `retrieve` with the `grounding` strategy across files and email,
+then targeted/batched `fetch` reads of returned sources. Known files do not trigger
+another global search. `ask` is reserved for relevant evidence/location gaps or
+retrieval limitations, avoiding an unnecessary second answer-generation pass.
+When a retrieval requests both files and email, a thin SDK subclass fans out the
+two source-scoped requests concurrently on separate request-owned Toolbox sessions.
+This preserves the SDK's caller-header isolation lock instead of bypassing it.
+Results remain tagged by source, including original metadata and local citation IDs,
+for the agent to merge and deduplicate without losing distinct findings. Narrowed
+or other source selections retain the normal SDK behavior. Approval, credentials
+and the upstream connection remain unchanged; failures are surfaced, not hidden.
+`search_paths` discovers supported API operations, not document content; direct
+drive search is used only with discovered paths. Different retrieval paths do not
+guarantee identical rankings or complete results, so relevance, attachment coverage
+and citation checks still apply. The advertised `retrieve` tool must be available
+in the tenant; existing `WorkIQAgent.Ask` delegated consent is reused.
+
+**This path does not independently verify source locations.** Exposing
+`fetch_blob` alone does not verify pages, slides or other locators. The agent labels
+source-returned positions as reported and says "page not verified", "slide not
+verified", or the native-location equivalent instead of inventing evidence.
 The earlier direct endpoint and page-verification code is deferred; historical
 design notes are preserved in [docs/standalone.md](docs/standalone.md).
 
@@ -120,7 +144,7 @@ create its secret, then run the full platform apply with the ephemeral input.
 Configure interaction controls in your Terraform inputs:
 
 ```hcl
-workiq_mcp_allowed_tools    = ["ask", "fetch", "get_schema", "search_paths", "fetch_blob"]
+workiq_mcp_allowed_tools    = ["ask", "fetch", "get_schema", "search_paths", "fetch_blob", "retrieve"]
 workiq_mcp_require_approval = "never"
 ```
 
@@ -260,6 +284,13 @@ The sidebar supports creating, selecting, renaming and deleting sessions. Signin
 in with an empty catalog automatically creates and selects the first session.
 Each prompt shows actual tool calls and explicitly reported skill invocations
 from the hosted stream, with a visible progress indicator before the first call.
+The activity summary separates skill/tool counts; a successful `load_skill` call
+shows **Skill loaded** and the skill name. This confirms instruction loading,
+not independently that every instruction was followed or a citation verified.
+New calls carry execution durations measured inside the agent, not the gap between
+receiving streamed call/result events (which may be batched). These durations
+exclude model time and delay before tool invocation. Sub-second calls show milliseconds; historical calls
+without runtime timing show **Timing unavailable**, not a misleading `0.0s`.
 Expandable **Input / output** controls load the selected call from its stored
 Foundry response after the prompt finishes. Payloads remain in Foundry rather
 than being copied into Cosmos; credential fields and authentication/temporary

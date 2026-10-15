@@ -20,6 +20,7 @@ import {
   locationLabel,
   mergeRun,
   protocolMessages,
+  toolDuration,
   type Consent,
   type Conversation,
   type FileReference,
@@ -98,12 +99,14 @@ function ToolDetails({ run, callId, load }: { run: Run; callId: string; load: Lo
 export function Activity({ run, loadDetails }: { run: Run; loadDetails: LoadToolDetails }) {
   const labels = { running: "Running", completed: "Returned", failed: "Error", cancelled: "Interrupted" };
   const active = run.status === "running";
+  const skillCount = run.activity.filter((call) => call.kind === "skill").length;
+  const toolCount = run.activity.length - skillCount;
   return <details className={`activity ${active ? "is-running" : ""}`} open={active}>
     <summary>
       {active ? <span className="spinner" aria-hidden="true" /> : <Icon name="activity" />}
       <span>{active && run.activity.length === 0
         ? "Request in progress"
-        : `${run.activity.length} ${run.activity.length === 1 ? "call" : "calls"}`}</span>
+        : `${skillCount} skill ${skillCount === 1 ? "call" : "calls"} / ${toolCount} tool ${toolCount === 1 ? "call" : "calls"}`}</span>
       <span className={`run-state ${run.status}`}>{active ? "In progress" : run.status}</span>
     </summary>
     <div className="activity-body">
@@ -118,12 +121,18 @@ export function Activity({ run, loadDetails }: { run: Run; loadDetails: LoadTool
             <div><code>{call.name.replace("___", " / ")}</code>
               {call.kind === "skill" && <small>Skill: {call.skill ?? "name not reported"}</small>}
             </div>
-            <span>{labels[call.status]}</span>
-            <small>{call.duration_ms === null ? "" : `${(call.duration_ms / 1000).toFixed(1)}s`}</small>
+            <span>{call.kind === "skill" && call.name === "load_skill" && call.status === "completed"
+              ? "Skill loaded" : labels[call.status]}</span>
+            <small title={call.timing_source === "runtime"
+              ? "Tool-call wall time measured inside the agent; excludes model time and delay before invocation."
+              : "No runtime execution timing was recorded. Stream-delivery gaps are not execution times."}>
+              {toolDuration(call)}
+            </small>
           </div>
           <ToolDetails run={run} callId={call.call_id} load={loadDetails} />
         </div>)}
       <p className="activity-note">Actual hosted-agent calls only. Private reasoning and Work IQ's internal execution are not exposed.</p>
+      {skillCount > 0 && <p className="activity-note">A successful skill load confirms its instructions were retrieved, not that every rule was followed or every source location verified.</p>}
     </div>
   </details>;
 }

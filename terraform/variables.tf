@@ -81,7 +81,7 @@ variable "workiq_mcp_secret_version" {
 variable "workiq_mcp_allowed_tools" {
   type        = list(string)
   description = "Exact upstream MCP tool names exposed to the agent; defaults exclude mutation tools."
-  default     = ["ask", "fetch", "get_schema", "search_paths", "fetch_blob"]
+  default     = ["ask", "fetch", "get_schema", "search_paths", "fetch_blob", "retrieve"]
 
   validation {
     condition = (

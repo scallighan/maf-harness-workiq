@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -18,11 +17,12 @@ from ag_ui.core import (
 )
 from fastapi import HTTPException
 
+from ..execution import tool_output_failed, unwrap_tool_output
 from .models import RunRecord, ToolActivity
 from .references import references_from_text
 from .store import now
 
-SKILL_TOOLS = {"load_skill", "read_skill", "get_skill", "invoke_skill", "execute_skill"}
+SKILL_TOOLS = {"load_skill", "read_skill_resource", "run_skill_script"}
 
 
 class ResponseEvents:
@@ -35,7 +35,6 @@ class ResponseEvents:
         self.arguments: dict[str, str] = {}
         self.ended_arguments: set[str] = set()
         self.returned_calls: set[str] = set()
-        self.started: dict[str, float] = {}
         self.item_calls: dict[str, str] = {}
         self.terminal = False
 
@@ -55,7 +54,7 @@ class ResponseEvents:
         self.ended_messages.add(identifier)
         return [TextMessageEndEvent(message_id=identifier)]
 
-    def start_call(self, item: dict, *, observed: bool) -> list[BaseEvent]:
+    def start_call(self, item: dict) -> list[BaseEvent]:
         identifier, name = item.get("call_id"), item.get("name")
         if not isinstance(identifier, str) or not isinstance(name, str):
             raise HTTPException(status_code=502, detail="Foundry returned an invalid tool call.")
@@ -63,15 +62,13 @@ class ResponseEvents:
             return []
         activity = ToolActivity(
             call_id=identifier, name=name, started_at=now(),
-            kind="skill" if name.rsplit("___", 1)[-1] in SKILL_TOOLS else "tool",
+            kind="skill" if name in SKILL_TOOLS else "tool",
         )
         self.calls[identifier] = activity
         if isinstance(item.get("id"), str):
             self.item_calls[item["id"]] = identifier
         self.arguments[identifier] = ""
         self.record.activity.append(activity)
-        if observed:
-            self.started[identifier] = time.monotonic()
         return [
             ToolCallStartEvent(tool_call_id=identifier, tool_call_name=name),
             self.activity_event(),
@@ -108,16 +105,18 @@ class ResponseEvents:
             return []
         self.returned_calls.add(identifier)
         activity = self.calls[identifier]
-        output = item.get("output")
-        if isinstance(output, str) and output.lstrip().startswith(("{", "[")):
-            try:
-                output = json.loads(output)
-            except json.JSONDecodeError:
-                output = None
-        failed = isinstance(output, dict) and (output.get("isError") is True or bool(output.get("error")))
+        try:
+            output, timing = unwrap_tool_output(
+                item.get("output"), call_id=identifier, name=activity.name,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=502, detail="Foundry returned invalid tool timing.") from error
+        failed = tool_output_failed(output, skill=activity.kind == "skill") or bool(timing and timing.failed)
         activity.status = "failed" if failed else "completed"
-        if identifier in self.started:
-            activity.duration_ms = round((time.monotonic() - self.started[identifier]) * 1000)
+        if timing:
+            activity.started_at = timing.started_at.isoformat()
+            activity.duration_ms = timing.duration_ms
+            activity.timing_source = "runtime"
         return [
             ToolCallResultEvent(
                 message_id=f"tool-{uuid4()}", tool_call_id=identifier,
@@ -178,7 +177,7 @@ class ResponseEvents:
                         },
                     ))
         elif kind == "function_call":
-            events.extend(self.start_call(item, observed=False))
+            events.extend(self.start_call(item))
             events.extend(self.finish_arguments(item["call_id"], item.get("arguments", "{}")))
         elif kind == "function_call_output":
             events.extend(self.finish_call(item))
@@ -202,7 +201,7 @@ class ResponseEvents:
             events.append(TextMessageContentEvent(message_id=identifier, delta=delta))
             return events
         if kind == "response.output_item.added" and event["item"].get("type") == "function_call":
-            return self.start_call(event["item"], observed=True)
+            return self.start_call(event["item"])
         if kind in ("response.function_call_arguments.delta", "response.function_call_arguments.done"):
             identifier = event.get("call_id")
             item_id = event.get("item_id")

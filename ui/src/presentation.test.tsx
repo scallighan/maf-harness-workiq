@@ -60,7 +60,7 @@ describe("run progress", () => {
       started_at: "2026-10-14T10:00:00Z", prompt_preview: "Hello", status: "completed",
       response_id: "resp1", assistant_message_ids: [], activity: [{
         call_id: "call1", name: "workiq___ask", status: "completed", kind: "tool",
-        skill: null, started_at: "2026-10-14T10:00:00Z", duration_ms: 200,
+        skill: null, started_at: "2026-10-14T10:00:00Z", duration_ms: 0, timing_source: null,
       }],
     };
     const html = renderToStaticMarkup(<Activity run={run} loadDetails={async () => ({
@@ -69,5 +69,32 @@ describe("run progress", () => {
     expect(html).toContain('class="tool-details"');
     expect(html).toContain("Input / output");
     expect(html).toContain("workiq / ask");
+    expect(html).toContain("0 skill calls / 1 tool call");
+    expect(html).not.toContain("Skill loaded");
+    expect(html).toContain("Timing unavailable");
+    expect(html).not.toContain("0.0s");
+  });
+
+  it.each(["completed", "failed"] as const)("shows an actual %s skill load without claiming rule verification", (status) => {
+    const run: Run = {
+      id: "11111111-1111-4111-8111-111111111111",
+      session_id: "22222222-2222-4222-8222-222222222222",
+      started_at: "2026-10-14T10:00:00Z", prompt_preview: "Find a presentation", status: "completed",
+      response_id: "resp1", assistant_message_ids: [], activity: [{
+        call_id: "skill1", name: "load_skill", status, kind: "skill",
+        skill: "document-finder", started_at: "2026-10-14T10:00:00Z", duration_ms: 2, timing_source: "runtime",
+      }],
+    };
+    const html = renderToStaticMarkup(<Activity run={run} loadDetails={async () => ({
+      input: '{"skill_name":"document-finder"}', output: "Skill instructions",
+      input_truncated: false, output_truncated: false,
+    })} />);
+    expect(html).toContain("1 skill call / 0 tool calls");
+    expect(html).toContain("Skill: document-finder");
+    expect(html).toContain("not that every rule was followed");
+    expect(html.includes("Skill loaded")).toBe(status === "completed");
+    if (status === "failed") expect(html).toContain("Error");
+    expect(html).toContain("Input / output");
+    expect(html).toContain("2 ms");
   });
 });

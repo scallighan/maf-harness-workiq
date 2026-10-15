@@ -2,12 +2,24 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from agent_framework import InMemoryHistoryProvider
+from agent_framework import (
+    BaseChatClient,
+    ChatMiddlewareLayer,
+    ChatResponse,
+    ChatResponseUpdate,
+    Content,
+    FunctionInvocationLayer,
+    InMemoryHistoryProvider,
+    ResponseStream,
+    SessionContext,
+    SkillsProvider,
+)
 from agent_framework.exceptions import ToolExecutionException
-from agent_framework_foundry_hosting import FoundryToolbox
 
 from workplace_agent import app
+from workplace_agent.execution import TIMING_KEY, unwrap_tool_output
 from workplace_agent.history import ScopedCosmosHistoryProvider
+from workplace_agent.retrieval import ParallelWorkIQToolbox
 
 
 @pytest.fixture
@@ -44,7 +56,7 @@ def factory(monkeypatch: pytest.MonkeyPatch):
         return client
 
     def transport_factory(*args, **kwargs):
-        transport = FoundryToolbox(*args, **kwargs)
+        transport = ParallelWorkIQToolbox(*args, **kwargs)
         transport.connect = AsyncMock()
         transport.close = AsyncMock()
         transports.append(transport)
@@ -53,7 +65,7 @@ def factory(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(app, "ManagedIdentityCredential", credential_factory)
     monkeypatch.setattr(app, "AzureCliCredential", credential_factory)
     monkeypatch.setattr(app, "CosmosClient", cosmos_factory)
-    monkeypatch.setattr(app, "FoundryToolbox", transport_factory)
+    monkeypatch.setattr(app, "ParallelWorkIQToolbox", transport_factory)
     return SimpleNamespace(
         config=config, context=context, credentials=credentials, clients=clients, transports=transports,
     )
@@ -119,6 +131,86 @@ async def test_factory_selects_loaded_cosmos_history_and_local_memory(
     assert history.load_messages
     assert len(factory.clients) == 1
     await build.call_args.kwargs["client"].__aexit__(None, None, None)
+
+
+async def test_factory_exposes_packaged_file_skill_with_only_local_read_operations_approved(
+    factory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build = MagicMock(wraps=app.create_harness_agent)
+    monkeypatch.setattr(app, "create_harness_agent", build)
+    agent = await app.create_agent()
+    try:
+        provider = SkillsProvider.from_paths(build.call_args.kwargs["skills_paths"])
+        context = SessionContext(input_messages=[])
+        await provider.before_run(agent=agent, session=agent.create_session(), context=context, state={})
+        load = next(tool for tool in context.tools if tool.name == "load_skill")
+        instructions = await load.invoke(arguments={"skill_name": "document-finder"}, skip_parsing=True)
+        assert "PowerPoint" in instructions
+        assert "Spreadsheet" in instructions
+        assert "Audio/video" in instructions
+        assert "inspect_document" not in instructions
+        rules = build.call_args.kwargs["auto_approval_rules"]
+        assert any(rule(Content.from_function_call("call1", "load_skill")) for rule in rules)
+        assert not any(rule(Content.from_function_call("call2", "run_skill_script")) for rule in rules)
+        assert not any(rule(Content.from_function_call(
+            "call3", "load_skill", additional_properties={"server_label": "remote"},
+        )) for rule in rules)
+    finally:
+        await build.call_args.kwargs["client"].__aexit__(None, None, None)
+
+
+async def test_factory_streams_timing_outside_lazy_approval_without_changing_model_or_history(
+    factory, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SyntheticClient(FunctionInvocationLayer, ChatMiddlewareLayer, BaseChatClient):
+        def __init__(self, **kwargs):
+            super().__init__()
+            self.project_client = MagicMock(close=AsyncMock())
+            self.client = MagicMock(close=AsyncMock())
+            self.requests = []
+
+        def _inner_get_response(self, *, messages, stream, options, **kwargs):
+            self.requests.append(list(messages))
+            first = len(self.requests) == 1
+
+            async def updates():
+                yield ChatResponseUpdate(
+                    role="assistant", finish_reason="tool_calls" if first else "stop",
+                    contents=[
+                        Content.from_function_call(
+                            "skill1", "load_skill", arguments='{"skill_name":"document-finder"}',
+                        ) if first else Content.from_text("Ready"),
+                    ],
+                )
+
+            return ResponseStream(updates(), finalizer=ChatResponse.from_updates)
+
+    factory.config.is_hosted = False
+    monkeypatch.setattr(app, "FoundryChatClient", SyntheticClient)
+    agent = await app.create_agent()
+    session = agent.create_session()
+    async with agent:
+        stream = agent.run("Load the document-finder skill.", session=session, stream=True)
+        results = [
+            content for update in [update async for update in stream] for content in update.contents
+            if content.type == "function_result"
+        ]
+        assert len(results) == 1
+        original, timing = unwrap_tool_output(results[0].result, call_id="skill1", name="load_skill")
+        assert timing and timing.duration_ms >= 0 and not timing.failed
+        assert isinstance(original, str) and "OneDriveAndSharePoint" in original
+        final = await stream.get_final_response()
+        assert all(
+            TIMING_KEY not in str(content.result)
+            for message in final.messages for content in message.contents if content.type == "function_result"
+        )
+        assert isinstance(agent.client, SyntheticClient)
+        assert all(
+            TIMING_KEY not in str(content.result)
+            for request in agent.client.requests for message in request for content in message.contents
+            if content.type == "function_result"
+        )
+        assert TIMING_KEY not in str(session.state)
 
 
 def test_responses_server_is_not_an_anonymous_local_workiq_gateway(

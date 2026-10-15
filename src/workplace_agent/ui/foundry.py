@@ -8,6 +8,7 @@ import httpx
 from fastapi import HTTPException
 from pydantic import ValidationError
 
+from ..execution import unwrap_tool_output
 from .config import UIConfig
 from .models import Reference, RunRecord
 from .payloads import payload_text
@@ -163,7 +164,18 @@ class FoundryGateway:
         if len(results) > 1 or (results and "output" not in results[0]):
             raise HTTPException(status_code=502, detail="Foundry returned ambiguous tool results.")
         inputs, input_truncated = payload_text(calls[0]["arguments"])
-        outputs, output_truncated = payload_text(results[0]["output"]) if results else (None, False)
+        outputs, output_truncated = None, False
+        if results:
+            name = calls[0].get("name")
+            try:
+                output, _ = unwrap_tool_output(
+                    results[0]["output"], call_id=call_id, name=name if isinstance(name, str) else None,
+                )
+            except ValueError as error:
+                raise HTTPException(
+                    status_code=502, detail="Foundry returned invalid tool timing.",
+                ) from error
+            outputs, output_truncated = payload_text(output)
         return {
             "input": inputs, "output": outputs,
             "input_truncated": input_truncated, "output_truncated": output_truncated,

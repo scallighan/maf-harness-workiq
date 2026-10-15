@@ -47,6 +47,7 @@ class ToolActivity(BaseModel):
     status: Literal["running", "completed", "failed", "cancelled"] = "running"
     started_at: str
     duration_ms: int | None = None
+    timing_source: Literal["runtime"] | None = None
 
 
 class RunRecord(BaseModel):
